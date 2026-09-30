@@ -29,14 +29,33 @@ class FuzzExecutor:
 
             elapsed = (time.perf_counter() - start) * 1000
 
+            if 200 <= response.status_code < 300:
+                execution_status = "completed"
+                execution_message = "Fuzz case executed successfully."
+            elif 400 <= response.status_code < 500:
+                execution_status = "target_rejected"
+                execution_message = (
+                    f"Target rejected the fuzz request with HTTP {response.status_code}."
+                )
+            elif 500 <= response.status_code < 600:
+                execution_status = "target_error"
+                execution_message = (
+                    f"Target returned server error HTTP {response.status_code}."
+                )
+            else:
+                execution_status = "completed"
+                execution_message = (
+                    f"Target returned HTTP {response.status_code}."
+                )
+
             return ExecutionResult(
                 target_id=target.target_id,
                 case_id=fuzz_case.case_id,
-                status="completed",
+                status=execution_status,
                 status_code=response.status_code,
                 response_time_ms=round(elapsed, 2),
                 response_body=response.text[:10000],
-                message="Fuzz case executed successfully.",
+                message=execution_message,
             )
 
         except httpx.TimeoutException:
