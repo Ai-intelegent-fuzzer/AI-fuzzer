@@ -1,7 +1,7 @@
 from app.adapters.manager import target_manager
+from app.analysis.analyzer import response_analyzer
 from app.execution.executor import fuzz_executor
 from app.fuzzing.engine import fuzz_engine
-from app.fuzzing.models import FuzzCase
 
 
 class FuzzOrchestrator:
@@ -17,11 +17,22 @@ class FuzzOrchestrator:
         results = []
 
         for fuzz_case in fuzz_cases:
-            result = fuzz_executor.execute(
+            execution = fuzz_executor.execute(
                 target,
                 fuzz_case,
             )
-            results.append(result)
+
+            analysis = response_analyzer.analyze(
+                execution=execution,
+                category=fuzz_case.category,
+            )
+
+            results.append(
+                {
+                    "execution": execution,
+                    "analysis": analysis,
+                }
+            )
 
         return results
 

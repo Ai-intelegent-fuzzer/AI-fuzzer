@@ -1,18 +1,22 @@
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
-from app.fuzzing.orchestrator import fuzz_orchestrator
+from app.analysis.models import AnalysisResult
 from app.execution.models import ExecutionResult
+from app.fuzzing.orchestrator import fuzz_orchestrator
 
+class ScanResult(BaseModel):
+    execution: ExecutionResult
+    analysis: AnalysisResult
 
 router = APIRouter(
     prefix="/targets",
     tags=["Fuzzing"],
 )
 
-
 @router.post(
     "/{target_id}/fuzz",
-    response_model=list[ExecutionResult],
+    response_model=list[ScanResult],
 )
 def run_fuzz(
     target_id: str,
