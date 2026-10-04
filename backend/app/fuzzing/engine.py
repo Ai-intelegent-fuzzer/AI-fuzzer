@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from .models import FuzzCase
+from .mutator import prompt_mutator
 
 
 FUZZ_TEMPLATES: dict[str, list[str]] = {
@@ -36,6 +37,7 @@ class FuzzingEngine:
         templates: list[tuple[str, str]] = []
 
         for category in selected_categories:
+
             if category not in FUZZ_TEMPLATES:
                 continue
 
@@ -48,15 +50,24 @@ class FuzzingEngine:
         cases: list[FuzzCase] = []
 
         for index in range(count):
+
             category, prompt = templates[index % len(templates)]
 
-            cases.append(
-                FuzzCase(
-                    case_id=str(uuid4()),
-                    prompt=prompt,
-                    category=category,
-                )
+            base_case = FuzzCase(
+                case_id=str(uuid4()),
+                prompt=prompt,
+                category=category,
             )
+
+            mutations = prompt_mutator.mutate(
+                base_case,
+                count=1,
+            )
+
+            if mutations:
+                cases.append(mutations[0])
+            else:
+                cases.append(base_case)
 
         return cases
 
