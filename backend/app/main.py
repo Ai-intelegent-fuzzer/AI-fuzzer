@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.execution import router as execution_router
 from app.api.fuzzing import router as fuzzing_router
 from app.api.scan import router as scan_router
+from app.api.scan import scan_lifecycle_router
 from app.api.targets import router as targets_router
 
 
@@ -17,6 +18,7 @@ app.include_router(targets_router)
 app.include_router(fuzzing_router)
 app.include_router(execution_router)
 app.include_router(scan_router)
+app.include_router(scan_lifecycle_router)
 
 
 @app.get("/")
