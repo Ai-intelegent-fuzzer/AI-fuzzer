@@ -205,13 +205,35 @@ class FuzzingEngine:
         for index in range(conversation_limit):
             category, prompt = templates[index % len(templates)]
             conversation_id = str(uuid4())
+            base_case_id = str(uuid4())
+            case_metadata = {
+                "origin_case_id": base_case_id,
+                "origin_prompt": prompt,
+            }
+            if category in attack_registry.list_categories():
+                attack = attack_registry.get_attacks(category)[0]
+                canary = attack.metadata.get("canary")
+                case_metadata.update(
+                    {
+                        "attack_id": attack.attack_id,
+                        "attack_name": attack.name,
+                        "attack_category": attack.category,
+                        "risk_area": attack.risk_area,
+                        "expected_behavior": attack.expected_behavior,
+                        "tags": list(attack.tags),
+                        "source": "ai_attack_library",
+                    }
+                )
+                if isinstance(canary, str) and canary in prompt:
+                    case_metadata["canary"] = canary
             current_case = FuzzCase(
-                case_id=str(uuid4()),
+                case_id=base_case_id,
                 prompt=prompt,
                 category=category,
                 sequence_id=conversation_id,
-                metadata={"origin_prompt": prompt},
+                metadata=case_metadata,
             )
+            conversation_metadata = dict(current_case.metadata)
             turns_list: list[FuzzTurn] = []
             for turn_index in range(turn_limit):
                 strategy_name = strategy_names[turn_index % len(strategy_names)]
@@ -230,6 +252,7 @@ class FuzzingEngine:
                         prompt=current_case.prompt,
                         parent_case_id=current_case.parent_case_id,
                         mutation_strategy=current_case.mutation_strategy,
+                        metadata=dict(current_case.metadata),
                     )
                 )
             conversations.append(
@@ -237,7 +260,7 @@ class FuzzingEngine:
                     conversation_id=conversation_id,
                     category=category,
                     turns=turns_list,
-                    metadata={"origin_prompt": prompt},
+                    metadata=conversation_metadata,
                 )
             )
         return conversations

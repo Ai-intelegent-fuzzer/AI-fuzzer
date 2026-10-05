@@ -22,6 +22,7 @@ class FuzzTurn(BaseModel):
     prompt: str = Field(min_length=1)
     parent_case_id: str | None = None
     mutation_strategy: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class FuzzConversation(BaseModel):

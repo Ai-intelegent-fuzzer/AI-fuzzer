@@ -50,6 +50,7 @@ class FuzzOrchestrator:
             analysis = response_analyzer.analyze(
                 execution=execution,
                 category=fuzz_case.category,
+                fuzz_case=fuzz_case,
             )
             return {"case": fuzz_case, "execution": execution, "analysis": analysis}
 
@@ -91,7 +92,7 @@ class FuzzOrchestrator:
                         mutation_strategy=turn.mutation_strategy,
                         mutation_depth=turn.turn_number,
                         sequence_id=conversation.conversation_id,
-                        metadata={"origin_prompt": conversation.metadata["origin_prompt"]},
+                        metadata={**conversation.metadata, **turn.metadata},
                     )
                     result = execute_case(fuzz_case, history)
                     if result is not None:
