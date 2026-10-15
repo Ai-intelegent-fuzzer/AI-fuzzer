@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 
+from app.api.adapter import router as adapter_router
+from app.api.connectivity import router as connectivity_router
 from app.api.execution import router as execution_router
 from app.api.fuzzing import router as fuzzing_router
 from app.api.scan import router as scan_router
@@ -14,13 +16,6 @@ app = FastAPI(
 )
 
 
-app.include_router(targets_router)
-app.include_router(fuzzing_router)
-app.include_router(execution_router)
-app.include_router(scan_router)
-app.include_router(scan_lifecycle_router)
-
-
 @app.get("/")
 def root():
     return {
@@ -33,3 +28,12 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+app.include_router(targets_router)
+app.include_router(adapter_router)
+app.include_router(connectivity_router)
+app.include_router(fuzzing_router)
+app.include_router(execution_router)
+app.include_router(scan_router)
+app.include_router(scan_lifecycle_router)

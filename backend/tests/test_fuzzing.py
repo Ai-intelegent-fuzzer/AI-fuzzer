@@ -610,6 +610,12 @@ class ApiCompatibilityTests(unittest.TestCase):
     def test_old_fuzz_routes_remain_available(self) -> None:
         from app.main import app
 
+        paths = app.openapi()["paths"]
+        self.assertIn("/targets/{target_id}/prompt", paths)
+        self.assertIn("/targets/{target_id}/connectivity", paths)
+        self.assertIn("/targets/{target_id}/execute", paths)
+        self.assertIn("/scans", paths)
+
         async def exercise_routes() -> None:
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
