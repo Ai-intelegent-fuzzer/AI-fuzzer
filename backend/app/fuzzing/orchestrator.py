@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
@@ -6,7 +7,7 @@ from app.adapters.manager import target_manager
 from app.analysis.analyzer import response_analyzer
 from app.execution.executor import fuzz_executor
 from app.fuzzing.engine import fuzz_engine
-from app.fuzzing.models import FuzzCase, FuzzConversation
+from app.fuzzing.models import FuzzCase, FuzzConversation, FuzzTurn
 
 
 class FuzzOrchestrator:
@@ -27,6 +28,7 @@ class FuzzOrchestrator:
         multi_turn: bool = False,
         turns_per_conversation: int = 3,
         cancel_event: Event | None = None,
+        on_cases_generated: Callable[[list[FuzzCase]], None] | None = None,
     ) -> list[dict[str, object]] | None:
         target = target_manager.get(target_id)
         if target is None:
@@ -76,6 +78,30 @@ class FuzzOrchestrator:
                 turns=turns,
             )
 
+            def conversation_case(
+                conversation: FuzzConversation,
+                turn: FuzzTurn,
+            ) -> FuzzCase:
+                return FuzzCase(
+                    case_id=turn.case_id,
+                    prompt=turn.prompt,
+                    category=conversation.category,
+                    parent_case_id=turn.parent_case_id,
+                    mutation_strategy=turn.mutation_strategy,
+                    mutation_depth=turn.turn_number,
+                    sequence_id=conversation.conversation_id,
+                    metadata={**conversation.metadata, **turn.metadata},
+                )
+
+            if on_cases_generated is not None:
+                on_cases_generated(
+                    [
+                        conversation_case(conversation, turn)
+                        for conversation in conversations
+                        for turn in conversation.turns
+                    ]
+                )
+
             def execute_conversation(
                 conversation: FuzzConversation,
             ) -> list[dict[str, object]]:
@@ -84,16 +110,7 @@ class FuzzOrchestrator:
                 for turn in conversation.turns:
                     if cancel_event is not None and cancel_event.is_set():
                         break
-                    fuzz_case = FuzzCase(
-                        case_id=turn.case_id,
-                        prompt=turn.prompt,
-                        category=conversation.category,
-                        parent_case_id=turn.parent_case_id,
-                        mutation_strategy=turn.mutation_strategy,
-                        mutation_depth=turn.turn_number,
-                        sequence_id=conversation.conversation_id,
-                        metadata={**conversation.metadata, **turn.metadata},
-                    )
+                    fuzz_case = conversation_case(conversation, turn)
                     result = execute_case(fuzz_case, history)
                     if result is not None:
                         conversation_results.append(result)
@@ -117,6 +134,8 @@ class FuzzOrchestrator:
             max_cases=max_cases,
             max_mutations_per_case=max_mutations_per_case,
         )
+        if on_cases_generated is not None:
+            on_cases_generated(list(fuzz_cases))
         if execution_order == "reverse":
             fuzz_cases.reverse()
         elif execution_order == "category":

@@ -77,6 +77,12 @@ class ScanScheduler:
             scan.started_at = datetime.now(timezone.utc)
 
         try:
+            generated_cases: list[FuzzCase] | None = None
+
+            def record_generated_cases(cases: list[FuzzCase]) -> None:
+                nonlocal generated_cases
+                generated_cases = list(cases)
+
             results = fuzz_orchestrator.run(
                 target_id=request.target_id,
                 count=request.count,
@@ -92,10 +98,11 @@ class ScanScheduler:
                 multi_turn=request.multi_turn,
                 turns_per_conversation=request.turns_per_conversation,
                 cancel_event=cancel_event,
+                on_cases_generated=record_generated_cases,
             )
             if results is None:
                 raise ValueError("Target no longer exists")
-            metrics, coverage = self._calculate_metrics(results)
+            metrics, coverage = self._calculate_metrics(results, generated_cases)
             with self._lock:
                 scan = self._scans[scan_id]
                 self._results[scan_id] = results
@@ -120,17 +127,24 @@ class ScanScheduler:
     def _calculate_metrics(
         self,
         results: list[dict[str, object]],
+        generated_cases: list[FuzzCase] | None = None,
     ) -> tuple[ScanMetrics, FuzzingCoverage]:
         cases = [result["case"] for result in results]
+        all_generated_cases = generated_cases if generated_cases is not None else cases
         executions = [result["execution"] for result in results]
         analyses = [result["analysis"] for result in results]
         categories: dict[str, dict[str, int]] = {}
-        for case, execution, analysis in zip(cases, executions, analyses):
+        for case in all_generated_cases:
             category_stats = categories.setdefault(
                 case.category,
                 {"generated": 0, "executed": 0, "vulnerable": 0, "findings": 0},
             )
             category_stats["generated"] += 1
+        for case, execution, analysis in zip(cases, executions, analyses):
+            category_stats = categories.setdefault(
+                case.category,
+                {"generated": 0, "executed": 0, "vulnerable": 0, "findings": 0},
+            )
             category_stats["executed"] += 1
             category_stats["vulnerable"] += int(analysis.vulnerable)
             category_stats["findings"] += len(analysis.findings)
@@ -138,11 +152,18 @@ class ScanScheduler:
         durations = [execution.response_time_ms or 0.0 for execution in executions]
         total_duration = sum(durations)
         strategies = sorted(
+            {
+                case.mutation_strategy
+                for case in all_generated_cases
+                if case.mutation_strategy
+            }
+        )
+        executed_strategies = sorted(
             {case.mutation_strategy for case in cases if case.mutation_strategy}
         )
-        categories_tested = sorted(categories)
+        categories_tested = sorted({case.category for case in cases})
         metrics = ScanMetrics(
-            total_generated_cases=len(cases),
+            total_generated_cases=len(all_generated_cases),
             total_executed_cases=len(executions),
             successful_executions=sum(
                 execution.status == "completed" for execution in executions
@@ -152,7 +173,9 @@ class ScanScheduler:
             ),
             timeouts=sum(execution.status == "timeout" for execution in executions),
             retries=sum(execution.retries for execution in executions),
-            mutations_generated=sum(case.mutation_depth > 0 for case in cases),
+            mutations_generated=sum(
+                case.mutation_depth > 0 for case in all_generated_cases
+            ),
             mutation_strategies_used=strategies,
             categories_tested=categories_tested,
             vulnerable_cases=sum(analysis.vulnerable for analysis in analyses),
@@ -163,7 +186,7 @@ class ScanScheduler:
         )
         coverage = FuzzingCoverage(
             categories_tested=categories_tested,
-            mutation_strategies_tested=strategies,
+            mutation_strategies_tested=executed_strategies,
             mutation_depths=sorted({case.mutation_depth for case in cases}),
             unique_prompts=len({case.prompt for case in cases}),
             unique_test_cases=len({case.case_id for case in cases}),

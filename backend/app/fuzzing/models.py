@@ -64,8 +64,17 @@ class ScanMetrics(BaseModel):
     failed_executions: int = 0
     timeouts: int = 0
     retries: int = 0
-    mutations_generated: int = 0
-    mutation_strategies_used: list[str] = Field(default_factory=list)
+    mutations_generated: int = Field(
+        default=0,
+        description="Generated scan-result cases with mutation_depth greater than zero.",
+    )
+    mutation_strategies_used: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Distinct strategies represented by generated mutation cases; "
+            "configured but unused strategies are omitted."
+        ),
+    )
     categories_tested: list[str] = Field(default_factory=list)
     vulnerable_cases: int = 0
     findings: int = 0

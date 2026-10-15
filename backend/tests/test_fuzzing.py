@@ -1,12 +1,14 @@
 import asyncio
 import json
 import unittest
+from collections.abc import Callable
+from threading import Event
 from unittest.mock import patch
 
 import httpx
 
 from app.adapters.models import Target
-from app.analysis.models import AnalysisResult
+from app.analysis.models import AnalysisResult, Confidence, Finding, Severity
 from app.execution.executor import FuzzExecutor
 from app.execution.models import ExecutionResult
 from app.fuzzing.engine import FUZZ_TEMPLATES, fuzz_engine
@@ -60,14 +62,133 @@ class MutationTests(unittest.TestCase):
             2,
             ["role_confusion"],
             max_mutation_depth=3,
+            max_mutations_per_case=1,
+        )
+
+        self.assertEqual(len(generated), 8)
+        self.assertTrue(all(item.category == "role_confusion" for item in generated))
+        self.assertEqual(
+            [item.mutation_depth for item in generated],
+            [0, 0, 1, 2, 3, 1, 2, 3],
+        )
+        self.assertEqual(len(generated[4].metadata["ancestor_case_ids"]), 3)
+        self.assertEqual(len(fuzz_engine.generate(500)), 100)
+        self.assertGreaterEqual(len(FUZZ_TEMPLATES), 11)
+
+    def test_engine_keeps_base_case_before_mutation(self) -> None:
+        generated = fuzz_engine.generate(
+            count=1,
+            categories=["prompt_injection"],
+            max_mutation_depth=1,
+            max_mutations_per_case=2,
+        )
+
+        self.assertEqual(len(generated), 3)
+        self.assertEqual(generated[0].mutation_depth, 0)
+        self.assertIsNone(generated[0].parent_case_id)
+        self.assertIsNone(generated[0].mutation_strategy)
+        self.assertEqual([case.mutation_depth for case in generated[1:]], [1, 1])
+        self.assertTrue(
+            all(case.parent_case_id == generated[0].case_id for case in generated[1:])
+        )
+        self.assertEqual(
+            [case.mutation_strategy for case in generated[1:]],
+            ["instruction_restructure", "role_variation"],
+        )
+
+    def test_zero_depth_and_zero_mutation_limit_return_only_base_cases(self) -> None:
+        zero_depth = fuzz_engine.generate(
+            1,
+            ["prompt_injection"],
+            max_mutation_depth=0,
+        )
+        zero_mutations = fuzz_engine.generate(
+            1,
+            ["prompt_injection"],
+            max_mutation_depth=1,
+            max_mutations_per_case=0,
+        )
+
+        self.assertEqual(len(zero_depth), 1)
+        self.assertEqual(len(zero_mutations), 1)
+        self.assertTrue(
+            all(case.mutation_depth == 0 for case in zero_depth + zero_mutations)
+        )
+
+    def test_total_case_limit_preserves_base_before_mutations(self) -> None:
+        generated = fuzz_engine.generate(
+            count=3,
+            categories=["prompt_injection"],
+            max_mutation_depth=1,
+            max_mutations_per_case=2,
+            max_cases=4,
+        )
+
+        self.assertEqual(len(generated), 4)
+        self.assertEqual(sum(case.mutation_depth == 0 for case in generated), 3)
+
+    def test_requested_categories_are_distributed_and_exclusive(self) -> None:
+        categories = ["prompt_injection", "jailbreak", "data_leakage"]
+        generated = fuzz_engine.generate(
+            count=5,
+            categories=categories,
+            max_mutation_depth=0,
+        )
+
+        counts = {category: 0 for category in categories}
+        for case in generated:
+            counts[case.category] += 1
+
+        self.assertEqual(len(generated), 5)
+        self.assertEqual(counts, {"prompt_injection": 2, "jailbreak": 2, "data_leakage": 1})
+        self.assertTrue(all(case.category in categories for case in generated))
+
+    def test_mutation_lineage_and_attack_metadata_are_preserved(self) -> None:
+        generated = fuzz_engine.generate(
+            1,
+            ["prompt_injection"],
+            max_mutation_depth=2,
+            max_mutations_per_case=1,
+        )
+
+        base, first_mutation, second_mutation = generated
+        self.assertEqual(first_mutation.parent_case_id, base.case_id)
+        self.assertEqual(first_mutation.mutation_depth, 1)
+        self.assertEqual(second_mutation.parent_case_id, first_mutation.case_id)
+        self.assertEqual(second_mutation.mutation_depth, 2)
+        self.assertEqual(second_mutation.metadata["origin_case_id"], base.case_id)
+        self.assertEqual(second_mutation.metadata["origin_prompt"], base.prompt)
+        self.assertEqual(
+            second_mutation.metadata["ancestor_case_ids"],
+            [base.case_id, first_mutation.case_id],
+        )
+        for key in ("attack_id", "attack_name", "attack_category", "risk_area"):
+            self.assertEqual(second_mutation.metadata[key], base.metadata[key])
+        self.assertTrue(second_mutation.mutation_strategy)
+
+    def test_empty_mutation_result_does_not_remove_base(self) -> None:
+        with patch("app.fuzzing.engine.prompt_mutator.mutate", return_value=[]):
+            generated = fuzz_engine.generate(
+                1,
+                ["prompt_injection"],
+                max_mutation_depth=1,
+            )
+
+        self.assertEqual(len(generated), 1)
+        self.assertEqual(generated[0].mutation_depth, 0)
+
+    def test_mutate_attack_cases_keeps_the_generated_base(self) -> None:
+        generated = fuzz_engine.mutate_attack_cases(
+            "prompt_injection",
+            count=1,
+            strategy_names=["role_variation"],
         )
 
         self.assertEqual(len(generated), 2)
-        self.assertTrue(all(item.category == "role_confusion" for item in generated))
-        self.assertTrue(all(item.mutation_depth == 3 for item in generated))
-        self.assertTrue(all(len(item.metadata["ancestor_case_ids"]) == 3 for item in generated))
-        self.assertEqual(len(fuzz_engine.generate(500)), 100)
-        self.assertGreaterEqual(len(FUZZ_TEMPLATES), 11)
+        self.assertEqual(generated[0].mutation_depth, 0)
+        self.assertEqual(generated[1].parent_case_id, generated[0].case_id)
+        self.assertEqual(generated[0].metadata["origin_case_id"], generated[0].case_id)
+        self.assertEqual(generated[1].metadata["origin_prompt"], generated[0].prompt)
 
     def test_multi_turn_sequences_are_ordered_and_traceable(self) -> None:
         conversation = fuzz_engine.generate_conversations(
@@ -81,6 +202,10 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(
             conversation.turns[1].parent_case_id,
             conversation.turns[0].case_id,
+        )
+        self.assertEqual(
+            conversation.turns[0].metadata["origin_case_id"],
+            conversation.turns[0].metadata["ancestor_case_ids"][0],
         )
 
 
@@ -210,13 +335,14 @@ class ExecutionTests(unittest.TestCase):
                 categories=["prompt_injection"],
             )
 
-        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results), 11)
         self.assertEqual(results[0]["execution"].status, "completed")
         self.assertTrue(results[0]["analysis"].vulnerable)
 
     def test_multi_turn_execution_carries_prior_response_as_context(self) -> None:
         real_client = httpx.Client
         received_prompts: list[str] = []
+        generated_cases: list[FuzzCase] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             received_prompts.append(json.loads(request.content)["prompt"])
@@ -244,10 +370,37 @@ class ExecutionTests(unittest.TestCase):
                 categories=["context_manipulation"],
                 multi_turn=True,
                 turns_per_conversation=2,
+                on_cases_generated=generated_cases.extend,
             )
 
         self.assertEqual(len(results), 2)
+        self.assertEqual(len(generated_cases), 2)
+        self.assertEqual(
+            [result["case"].case_id for result in results],
+            [case.case_id for case in generated_cases],
+        )
         self.assertIn("assistant: {\"response\":\"synthetic reply 1\"}", received_prompts[1])
+
+    def test_orchestrator_reports_generated_cases_skipped_by_cancellation(self) -> None:
+        from app.fuzzing.orchestrator import FuzzOrchestrator
+
+        generated_cases = [self.case]
+        reported_cases: list[FuzzCase] = []
+        cancel_event = Event()
+        cancel_event.set()
+        with (
+            patch("app.fuzzing.orchestrator.target_manager.get", return_value=self.target),
+            patch("app.fuzzing.orchestrator.fuzz_engine.generate", return_value=generated_cases),
+        ):
+            results = FuzzOrchestrator().run(
+                "synthetic",
+                count=1,
+                cancel_event=cancel_event,
+                on_cases_generated=reported_cases.extend,
+            )
+
+        self.assertEqual(results, [])
+        self.assertEqual(reported_cases, generated_cases)
 
 
 class ScanTests(unittest.TestCase):
@@ -292,6 +445,166 @@ class ScanTests(unittest.TestCase):
             1,
         )
 
+    def test_metrics_match_generated_cases_executions_and_findings(self) -> None:
+        cases = [
+            FuzzCase(
+                case_id="base",
+                prompt="synthetic base",
+                category="prompt_injection",
+            ),
+            FuzzCase(
+                case_id="mutation-1",
+                prompt="synthetic mutation one",
+                category="prompt_injection",
+                parent_case_id="base",
+                mutation_strategy="role_variation",
+                mutation_depth=1,
+            ),
+            FuzzCase(
+                case_id="mutation-2",
+                prompt="synthetic mutation two",
+                category="jailbreak",
+                parent_case_id="base",
+                mutation_strategy="context_variation",
+                mutation_depth=1,
+            ),
+        ]
+        results = []
+        for index, case in enumerate(cases):
+            execution = ExecutionResult(
+                target_id="synthetic",
+                case_id=case.case_id,
+                status="timeout" if index == 2 else "completed",
+                response_body=None if index == 2 else "synthetic response",
+                response_time_ms=10.0 + index,
+                message="synthetic result",
+            )
+            analysis = AnalysisResult(
+                target_id="synthetic",
+                case_id=case.case_id,
+                category=case.category,
+                vulnerable=index == 1,
+                findings=(
+                    [
+                        Finding(
+                            finding_id="synthetic-finding",
+                            case_id=case.case_id,
+                            target_id="synthetic",
+                            category=case.category,
+                            title="Synthetic test finding",
+                            severity=Severity.MEDIUM,
+                            confidence=Confidence.HIGH,
+                            evidence="Synthetic controlled evidence",
+                            recommendation="Maintain the configured trust boundary.",
+                        )
+                    ]
+                    if index == 1
+                    else []
+                ),
+            )
+            results.append(
+                {"case": case, "execution": execution, "analysis": analysis}
+            )
+
+        metrics, coverage = ScanScheduler(max_workers=1)._calculate_metrics(results)
+
+        self.assertEqual(metrics.total_generated_cases, len(cases))
+        self.assertEqual(metrics.total_executed_cases, len(results))
+        self.assertEqual(metrics.mutations_generated, 2)
+        self.assertEqual(
+            metrics.mutation_strategies_used,
+            ["context_variation", "role_variation"],
+        )
+        self.assertEqual(metrics.failed_executions, 1)
+        self.assertEqual(metrics.timeouts, 1)
+        self.assertEqual(metrics.findings, 1)
+        self.assertEqual(metrics.vulnerable_cases, 1)
+        self.assertEqual(metrics.categories_tested, ["jailbreak", "prompt_injection"])
+        self.assertEqual(
+            metrics.category_statistics["prompt_injection"]["generated"],
+            2,
+        )
+        self.assertEqual(
+            metrics.category_statistics["jailbreak"]["executed"],
+            1,
+        )
+        self.assertEqual(coverage.target_responses, 2)
+        self.assertEqual(
+            sum(stats["generated"] for stats in metrics.category_statistics.values()),
+            len(cases),
+        )
+        self.assertEqual(
+            sum(stats["executed"] for stats in metrics.category_statistics.values()),
+            len(results),
+        )
+        self.assertEqual(coverage.mutation_depths, [0, 1])
+        self.assertEqual(coverage.unique_test_cases, len(cases))
+
+    def test_scheduler_counts_generated_cases_skipped_after_cancellation(self) -> None:
+        scheduler = ScanScheduler(max_workers=1)
+        cases = [
+            FuzzCase(
+                case_id="generated-base",
+                prompt="synthetic base",
+                category="prompt_injection",
+            ),
+            FuzzCase(
+                case_id="generated-mutation-1",
+                prompt="synthetic mutation one",
+                category="prompt_injection",
+                parent_case_id="generated-base",
+                mutation_strategy="role_variation",
+                mutation_depth=1,
+            ),
+            FuzzCase(
+                case_id="generated-mutation-2",
+                prompt="synthetic mutation two",
+                category="prompt_injection",
+                parent_case_id="generated-base",
+                mutation_strategy="context_variation",
+                mutation_depth=1,
+            ),
+        ]
+        execution = ExecutionResult(
+            target_id="synthetic",
+            case_id=cases[0].case_id,
+            status="completed",
+            response_body="synthetic response",
+            message="ok",
+        )
+        analysis = AnalysisResult(
+            target_id="synthetic",
+            case_id=cases[0].case_id,
+            category=cases[0].category,
+            vulnerable=False,
+        )
+
+        def run_partial_scan(
+            *,
+            on_cases_generated: Callable[[list[FuzzCase]], None],
+            cancel_event: Event,
+            **kwargs: object,
+        ) -> list[dict[str, object]]:
+            on_cases_generated(cases)
+            cancel_event.set()
+            return [{"case": cases[0], "execution": execution, "analysis": analysis}]
+
+        with patch(
+            "app.fuzzing.scheduler.fuzz_orchestrator.run",
+            side_effect=run_partial_scan,
+        ):
+            queued = scheduler.start(ScanCreateRequest(target_id="synthetic", count=1))
+            scheduler._futures[queued.scan_id].result(timeout=5)
+
+        completed = scheduler.get(queued.scan_id)
+        self.assertEqual(completed.status, ScanStatus.CANCELLED)
+        self.assertEqual(completed.generated_case_count, 3)
+        self.assertEqual(completed.executed_case_count, 1)
+        self.assertEqual(completed.metrics.mutations_generated, 2)
+        category_stats = completed.metrics.category_statistics["prompt_injection"]
+        self.assertEqual(category_stats["generated"], 3)
+        self.assertEqual(category_stats["executed"], 1)
+
 
 class ApiCompatibilityTests(unittest.TestCase):
     def test_old_fuzz_routes_remain_available(self) -> None:
@@ -316,7 +629,11 @@ class ApiCompatibilityTests(unittest.TestCase):
                     f"/targets/{target_id}/fuzz-cases?count=2"
                 )
                 self.assertEqual(cases.status_code, 200)
-                self.assertEqual(len(cases.json()), 2)
+                self.assertEqual(len(cases.json()), 22)
+                self.assertEqual(
+                    sum(case["mutation_depth"] == 0 for case in cases.json()),
+                    2,
+                )
                 self.assertIn("mutation_strategy", cases.json()[0])
 
                 def execute(target: Target, case: FuzzCase, **kwargs: object) -> ExecutionResult:
@@ -331,7 +648,7 @@ class ApiCompatibilityTests(unittest.TestCase):
                 with patch("app.fuzzing.orchestrator.fuzz_executor.execute", side_effect=execute):
                     fuzzed = await client.post(f"/targets/{target_id}/fuzz?count=1")
                 self.assertEqual(fuzzed.status_code, 200)
-                self.assertEqual(len(fuzzed.json()), 1)
+                self.assertEqual(len(fuzzed.json()), 11)
                 self.assertIn("execution", fuzzed.json()[0])
                 self.assertIn("analysis", fuzzed.json()[0])
 

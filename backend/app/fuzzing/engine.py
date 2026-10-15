@@ -78,16 +78,20 @@ class FuzzingEngine:
         strategy_names: list[str] | None = None,
         max_mutation_depth: int = 1,
     ) -> list[FuzzCase]:
+        """Return attack base cases alongside any mutations generated from them."""
         generated = self.generate_attacks(category=category, count=count)
         mutated: list[FuzzCase] = []
         for case in generated:
+            case.metadata.setdefault("origin_case_id", case.case_id)
+            case.metadata.setdefault("origin_prompt", case.prompt)
+            mutated.append(case)
             results = prompt_mutator.mutate(
                 case,
                 count=1,
                 strategy_names=strategy_names,
                 max_mutation_depth=max_mutation_depth,
             )
-            mutated.extend(results or [case])
+            mutated.extend(results)
         return mutated
 
     def generate(
@@ -100,14 +104,33 @@ class FuzzingEngine:
         max_mutations_per_case: int = 10,
         mutation_strategies: list[str] | None = None,
     ) -> list[FuzzCase]:
+        """Generate ``count`` base cases, distributing them round-robin by category.
 
-        selected_categories = list(FUZZ_TEMPLATES) if categories is None else categories
-        attack_categories = [category for category in selected_categories if category in attack_registry.list_categories()]
-        legacy_categories = [category for category in selected_categories if category not in attack_registry.list_categories()]
+        Mutations are additional cases and count toward the total ``max_cases`` cap.
+        """
+        selected_categories = (
+            list(FUZZ_TEMPLATES) if categories is None else categories
+        )
+        registry_categories = set(attack_registry.list_categories())
+        available_categories = list(
+            dict.fromkeys(
+                category
+                for category in selected_categories
+                if category in registry_categories or FUZZ_TEMPLATES.get(category)
+            )
+        )
+        case_limit = min(max(max_cases, 0), MAX_GENERATED_CASES)
+        base_case_limit = min(
+            max(count, 0),
+            case_limit,
+        )
 
-        case_limit = min(max(count, 0), max(max_cases, 0), MAX_GENERATED_CASES)
-        depth_limit = min(max(max_mutation_depth, 0), prompt_mutator.MAX_MUTATION_DEPTH)
-        if case_limit == 0:
+        depth_limit = min(
+            max(max_mutation_depth, 0),
+            prompt_mutator.MAX_MUTATION_DEPTH,
+        )
+
+        if base_case_limit == 0 or not available_categories:
             return []
 
         if mutation_strategies is None:
@@ -115,72 +138,74 @@ class FuzzingEngine:
         else:
             strategy_names = mutation_strategies
 
-        cases: list[FuzzCase] = []
-
-        if attack_categories:
-            total_attack_cases = []
-            for category in attack_categories:
-                for attack in attack_registry.generate(category, case_limit):
-                    base_case = attack_registry.to_fuzz_case(attack)
-                    base_case.metadata.setdefault("origin_case_id", base_case.case_id)
-                    base_case.metadata.setdefault("origin_prompt", base_case.prompt)
-                    current_case = base_case
-                    for depth in range(depth_limit):
-                        strategy_name = strategy_names[(len(cases) + depth) % len(strategy_names)] if strategy_names else None
-                        mutations = prompt_mutator.mutate(
-                            current_case,
-                            count=1,
-                            strategy_names=[strategy_name] if strategy_name else [],
-                            max_mutations_per_case=max_mutations_per_case,
-                            max_mutation_depth=depth_limit,
-                        )
-                        if not mutations:
-                            break
-                        current_case = mutations[0]
-                        current_case.metadata.setdefault("attack_id", base_case.metadata.get("attack_id"))
-                        current_case.metadata.setdefault("attack_name", base_case.metadata.get("attack_name"))
-                        current_case.metadata.setdefault("attack_category", base_case.metadata.get("attack_category"))
-                        current_case.metadata.setdefault("risk_area", base_case.metadata.get("risk_area"))
-                        current_case.metadata.setdefault("expected_behavior", base_case.metadata.get("expected_behavior"))
-                    total_attack_cases.append(current_case)
-            cases.extend(total_attack_cases[:case_limit])
-
-        if legacy_categories:
-            templates: list[tuple[str, str]] = []
-            for category in legacy_categories:
-                if category not in FUZZ_TEMPLATES:
+        base_cases: list[FuzzCase] = []
+        category_counts: dict[str, int] = {}
+        for index in range(base_case_limit):
+            category = available_categories[index % len(available_categories)]
+            if category in registry_categories:
+                attacks = attack_registry.generate(category, count=1)
+                if not attacks:
                     continue
-                for prompt in FUZZ_TEMPLATES[category]:
-                    templates.append((category, prompt))
+                base_case = attack_registry.to_fuzz_case(attacks[0])
+            else:
+                templates = FUZZ_TEMPLATES[category]
+                template_index = category_counts.get(category, 0) % len(templates)
+                base_case_id = str(uuid4())
+                prompt = templates[template_index]
+                base_case = FuzzCase(
+                    case_id=base_case_id,
+                    prompt=prompt,
+                    category=category,
+                )
+            base_case.metadata.setdefault("origin_case_id", base_case.case_id)
+            base_case.metadata.setdefault("origin_prompt", base_case.prompt)
+            base_cases.append(base_case)
+            category_counts[category] = category_counts.get(category, 0) + 1
 
-            if templates:
-                for index in range(case_limit - len(cases)):
-                    category, prompt = templates[index % len(templates)]
-                    base_case_id = str(uuid4())
-                    base_case = FuzzCase(
-                        case_id=base_case_id,
-                        prompt=prompt,
-                        category=category,
-                        metadata={"origin_case_id": base_case_id, "origin_prompt": prompt},
-                    )
+        cases = list(base_cases)
+        for base_index, base_case in enumerate(base_cases):
+            frontier = [base_case]
+            for depth in range(depth_limit):
+                next_frontier: list[FuzzCase] = []
+                for parent_index, parent_case in enumerate(frontier):
+                    remaining = case_limit - len(cases)
+                    mutation_limit = min(max(max_mutations_per_case, 0), remaining)
+                    if mutation_limit == 0:
+                        break
 
-                    current_case = base_case
-                    for depth in range(depth_limit):
-                        strategy_name = strategy_names[(index + depth) % len(strategy_names)] if strategy_names else None
-                        mutations = prompt_mutator.mutate(
-                            current_case,
-                            count=1,
-                            strategy_names=[strategy_name] if strategy_name else [],
-                            max_mutations_per_case=max_mutations_per_case,
-                            max_mutation_depth=depth_limit,
+                    if strategy_names:
+                        strategy_offset = (
+                            base_index + depth + parent_index
+                        ) % len(strategy_names)
+                        ordered_strategies = (
+                            strategy_names[strategy_offset:]
+                            + strategy_names[:strategy_offset]
                         )
-                        if not mutations:
-                            break
-                        current_case = mutations[0]
+                    else:
+                        ordered_strategies = []
 
-                    cases.append(current_case)
+                    mutations = prompt_mutator.mutate(
+                        parent_case,
+                        count=mutation_limit,
+                        strategy_names=ordered_strategies,
+                        max_mutations_per_case=mutation_limit,
+                        max_mutation_depth=depth_limit,
+                    )
+                    for mutation in mutations[:mutation_limit]:
+                        for key, value in base_case.metadata.items():
+                            mutation.metadata.setdefault(key, value)
+                        mutation.metadata.setdefault(
+                            "origin_case_id",
+                            base_case.case_id,
+                        )
+                        mutation.metadata.setdefault("origin_prompt", base_case.prompt)
+                        cases.append(mutation)
+                        next_frontier.append(mutation)
+                frontier = next_frontier
+                if not frontier or len(cases) >= case_limit:
+                    break
 
-        return cases[:case_limit]
+        return cases
 
     def generate_conversations(
         self,
