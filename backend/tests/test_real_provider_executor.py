@@ -1,4 +1,3 @@
-import json
 import unittest
 from unittest.mock import patch
 
@@ -80,6 +79,16 @@ class RealProviderExecutorTests(unittest.TestCase):
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
     @patch("app.execution.executor.httpx.post")
+    def test_unavailable_model_is_reported_without_raw_provider_body(self, post) -> None:
+        post.return_value = httpx.Response(404, text="private model diagnostic")
+        result = FuzzExecutor().execute(self.target, self.case)
+        self.assertEqual(result.status, "target_error")
+        self.assertEqual(result.status_code, 404)
+        self.assertNotIn("private model diagnostic", result.message)
+        self.assertIsNone(result.response_body)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.httpx.post")
     def test_malformed_success_response_is_reported(self, post) -> None:
         post.return_value = httpx.Response(200, json={"unexpected": "format"})
         result = FuzzExecutor().execute(self.target, self.case)
@@ -93,6 +102,14 @@ class RealProviderExecutorTests(unittest.TestCase):
         result = FuzzExecutor().execute(self.target, self.case)
         self.assertEqual(result.status, "timeout")
         self.assertNotIn("private diagnostic", result.message)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.httpx.post")
+    def test_network_error_is_sanitized(self, post) -> None:
+        post.side_effect = httpx.ConnectError("private connection details")
+        result = FuzzExecutor().execute(self.target, self.case)
+        self.assertEqual(result.status, "network_error")
+        self.assertNotIn("private connection details", result.message)
 
     @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     @patch("app.execution.executor.httpx.post")
