@@ -19,6 +19,7 @@ class FuzzOrchestrator:
         categories: list[str] | None = None,
         max_mutation_depth: int = 1,
         max_cases: int = 100,
+        total_case_limit: int | None = None,
         max_mutations_per_case: int = 10,
         timeout_seconds: float = 30.0,
         max_retries: int = 0,
@@ -134,6 +135,8 @@ class FuzzOrchestrator:
             max_cases=max_cases,
             max_mutations_per_case=max_mutations_per_case,
         )
+        if total_case_limit is not None:
+            fuzz_cases = fuzz_cases[:max(total_case_limit, 0)]
         if on_cases_generated is not None:
             on_cases_generated(list(fuzz_cases))
         if execution_order == "reverse":

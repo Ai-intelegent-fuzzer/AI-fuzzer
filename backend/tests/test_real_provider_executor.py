@@ -52,7 +52,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.status, "configuration_error")
         self.assertNotIn("test-secret", result.message)
 
-    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": ""})
     def test_missing_model_returns_configuration_error(self) -> None:
         target = self.target.model_copy(update={"model": None})
         result = FuzzExecutor().execute(target, self.case)

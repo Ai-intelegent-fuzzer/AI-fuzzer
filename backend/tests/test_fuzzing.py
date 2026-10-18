@@ -654,7 +654,7 @@ class ApiCompatibilityTests(unittest.TestCase):
                 with patch("app.fuzzing.orchestrator.fuzz_executor.execute", side_effect=execute):
                     fuzzed = await client.post(f"/targets/{target_id}/fuzz?count=1")
                 self.assertEqual(fuzzed.status_code, 200)
-                self.assertEqual(len(fuzzed.json()), 11)
+                self.assertEqual(len(fuzzed.json()), 1)
                 self.assertIn("execution", fuzzed.json()[0])
                 self.assertIn("analysis", fuzzed.json()[0])
 

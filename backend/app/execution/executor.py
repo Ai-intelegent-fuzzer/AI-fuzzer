@@ -189,17 +189,17 @@ class FuzzExecutor:
                 total_tokens=total_tokens,
             )
 
-        if not api_key:
-            return result(
-                status="configuration_error",
-                message=f"Missing {env_prefix}_API_KEY in backend/.env or environment.",
-                failure_reason="provider_api_key_missing",
-            )
         if not model:
             return result(
                 status="configuration_error",
                 message=f"Set target.model or {env_prefix}_MODEL.",
                 failure_reason="provider_model_missing",
+            )
+        if not api_key:
+            return result(
+                status="configuration_error",
+                message=f"Missing {env_prefix}_API_KEY in backend/.env or environment.",
+                failure_reason="provider_api_key_missing",
             )
 
         messages = []
