@@ -610,6 +610,12 @@ class ApiCompatibilityTests(unittest.TestCase):
     def test_old_fuzz_routes_remain_available(self) -> None:
         from app.main import app
 
+        paths = app.openapi()["paths"]
+        self.assertIn("/targets/{target_id}/prompt", paths)
+        self.assertIn("/targets/{target_id}/connectivity", paths)
+        self.assertIn("/targets/{target_id}/execute", paths)
+        self.assertIn("/scans", paths)
+
         async def exercise_routes() -> None:
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
@@ -648,7 +654,7 @@ class ApiCompatibilityTests(unittest.TestCase):
                 with patch("app.fuzzing.orchestrator.fuzz_executor.execute", side_effect=execute):
                     fuzzed = await client.post(f"/targets/{target_id}/fuzz?count=1")
                 self.assertEqual(fuzzed.status_code, 200)
-                self.assertEqual(len(fuzzed.json()), 11)
+                self.assertEqual(len(fuzzed.json()), 1)
                 self.assertIn("execution", fuzzed.json()[0])
                 self.assertIn("analysis", fuzzed.json()[0])
 
