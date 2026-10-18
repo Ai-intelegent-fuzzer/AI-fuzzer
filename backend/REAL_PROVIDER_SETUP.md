@@ -41,9 +41,34 @@ OpenAI example:
 
 Use the endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results.
 
-## Run a bounded scan
+## Verify inference and run one safe case
 
-First use `POST /targets/{target_id}/execute` with one harmless `FuzzCase` to validate authenticated inference. Then run `POST /targets/{target_id}/fuzz?count=1` or `POST /scans` with `count: 1`, `concurrency: 1`, `max_retries: 0`, and a short timeout. The fuzz route expands each generated seed into its configured mutation cases, so it can make more than one provider call; prefer the lifecycle scan endpoint with a small count and check generated-case metrics before larger runs.
+1. Call `POST /targets/{target_id}/connectivity`. For provider targets this sends one harmless authenticated inference request, not merely a GET request to the endpoint.
+2. Call `POST /targets/{target_id}/execute` with this body to verify the actual execution path:
+```json
+{
+  "case_id": "smoke-test-1",
+  "prompt": "Reply with exactly: AI-Fuzzer connectivity OK",
+  "category": "connectivity_check"
+}
+```
+3. For a first security scan, use `POST /scans` with this request, replacing the target ID:
+```json
+{
+  "target_id": "YOUR_TARGET_ID",
+  "count": 1,
+  "categories": ["prompt_injection"],
+  "max_mutation_depth": 0,
+  "max_mutations_per_case": 0,
+  "timeout_seconds": 15,
+  "max_retries": 0,
+  "concurrency": 1,
+  "delay_seconds": 1
+}
+```
+4. Poll `GET /scans/{scan_id}` and then inspect `GET /scans/{scan_id}/results`.
+
+Do not start with a large scan. The direct `/targets/{target_id}/fuzz?count=1` route may expand one seed into multiple mutations; the scan lifecycle endpoint with mutation depth and mutation count set to zero is the controlled single-case starting point.
 
 ## Results and errors
 
@@ -58,4 +83,4 @@ From `backend/`:
 python -m pytest -q
 ```
 
-These unit tests mock HTTP responses and never use a real API key. A real inference smoke test requires a valid local key, internet access, model access, and may incur provider charges. Start with one harmless prompt and verify the result's provider, model, status, response, latency, and token usage.
+The added provider unit tests mock HTTP responses and never use a real API key. A live inference smoke test requires a valid local key, internet access, model access, and may incur provider charges. Confirm provider, model, status, response, latency, and token usage in the returned result.
