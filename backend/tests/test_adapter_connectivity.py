@@ -164,6 +164,7 @@ class GeminiConnectivityTests(unittest.TestCase):
         args, kwargs = execute.call_args
         self.assertEqual(args[0], self.target)
         self.assertEqual(args[1].category, "connectivity_check")
+        self.assertEqual(kwargs["timeout_seconds"], 30.0)
         self.assertEqual(kwargs["max_retries"], 0)
 
     @patch("app.connectivity.tester.fuzz_executor.execute")
