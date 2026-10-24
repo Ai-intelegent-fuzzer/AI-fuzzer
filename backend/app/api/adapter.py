@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -44,7 +46,14 @@ def send_prompt(target_id: str, request: PromptRequest):
         )
 
     except Exception as exc:
+        # Do not expose provider exception messages to API clients.
+        # Log only the target ID and exception type, not prompts or secrets.
+        logging.getLogger(__name__).error(
+            "Prompt request failed for target_id=%s; exception_type=%s",
+            target_id,
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"Target request failed: {exc}",
-        )
+            detail="Target request failed. Check target configuration and server logs.",
+        ) from None

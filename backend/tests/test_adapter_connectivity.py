@@ -125,5 +125,66 @@ class ConnectivityTests(unittest.TestCase):
         self.assertIn("connect", result.message.lower())
 
 
+class GeminiConnectivityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.adapters.models import AIProvider, TargetType
+
+        self.target = Target(
+            target_id="gemini-connectivity-target",
+            name="Gemini connectivity target",
+            target_type=TargetType.OPENAI_COMPATIBLE,
+            endpoint="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-2.5-flash",
+            provider=AIProvider.GEMINI,
+        )
+        self.tester = ConnectivityTester()
+
+    @patch("app.connectivity.tester.fuzz_executor.execute")
+    def test_gemini_connectivity_uses_authenticated_execution(self, execute) -> None:
+        from app.execution.models import ExecutionResult
+
+        execute.return_value = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="connectivity-check",
+            status="completed",
+            status_code=200,
+            response_time_ms=42.0,
+            response_body="AI-Fuzzer connectivity OK",
+            message="Real Gemini inference completed.",
+            provider="gemini",
+            model="gemini-2.5-flash",
+        )
+
+        result = self.tester.test(self.target)
+
+        self.assertEqual(result.status, ConnectivityStatus.REACHABLE)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.target_id, self.target.target_id)
+        execute.assert_called_once()
+        args, kwargs = execute.call_args
+        self.assertEqual(args[0], self.target)
+        self.assertEqual(args[1].category, "connectivity_check")
+        self.assertEqual(kwargs["max_retries"], 0)
+
+    @patch("app.connectivity.tester.fuzz_executor.execute")
+    def test_gemini_connectivity_reports_authentication_failure(self, execute) -> None:
+        from app.execution.models import ExecutionResult
+
+        execute.return_value = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="connectivity-check",
+            status="authentication_error",
+            message="Gemini rejected the API credentials or access.",
+            failure_reason="provider_authentication_failed",
+        )
+
+        result = self.tester.test(self.target)
+
+        self.assertEqual(result.status, ConnectivityStatus.ERROR)
+        self.assertEqual(result.target_id, self.target.target_id)
+        self.assertIn("authentication_error", result.message)
+        self.assertNotIn("API key", result.message)
+
+
 if __name__ == "__main__":
     unittest.main()

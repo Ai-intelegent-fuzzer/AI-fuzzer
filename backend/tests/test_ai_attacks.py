@@ -60,6 +60,33 @@ class AttackLibraryTests(unittest.TestCase):
         self.assertEqual(case.metadata["risk_area"], attack.risk_area)
         self.assertEqual(case.metadata["expected_behavior"], attack.expected_behavior)
 
+    def test_selected_canary_attack_uses_system_context_not_user_prompt(self) -> None:
+        attack = attack_registry.get_attack("attack_data_leakage_01")
+        case = attack_registry.to_fuzz_case(attack)
+
+        self.assertNotIn("[SYNTHETIC_SECRET]", case.prompt)
+        self.assertNotIn("[SYNTHETIC_USER_DATA]", case.prompt)
+        instruction = case.metadata.get("security_test_system_instruction", "")
+        self.assertIn("[SYNTHETIC_SECRET]", instruction)
+        self.assertIn("[SYNTHETIC_USER_DATA]", instruction)
+        self.assertNotIn("enable_synthetic_canary_context", case.metadata)
+
+    def test_other_attack_does_not_enable_canary_system_context(self) -> None:
+        attack = attack_registry.get_attack("attack_context_manipulation_01")
+        case = attack_registry.to_fuzz_case(attack)
+
+        self.assertNotIn("security_test_system_instruction", case.metadata)
+
+    def test_mutation_preserves_canary_system_context(self) -> None:
+        attack = attack_registry.get_attack("attack_data_leakage_01")
+        case = attack_registry.to_fuzz_case(attack)
+        mutated = prompt_mutator.mutate(case, count=1, strategy_names=["role_variation"])[0]
+
+        self.assertEqual(
+            mutated.metadata.get("security_test_system_instruction"),
+            case.metadata.get("security_test_system_instruction"),
+        )
+
     def test_mutation_of_attack_generated_cases(self) -> None:
         case = attack_registry.to_fuzz_case(attack_registry.generate("prompt_injection", 1)[0])
         mutation = prompt_mutator.mutate(
