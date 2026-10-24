@@ -498,6 +498,36 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertEqual(result.status, AnalysisStatus.INCONCLUSIVE)
         self.assertEqual(result.findings, [])
 
+    def test_provider_safety_block_is_inconclusive_and_creates_no_finding(self) -> None:
+        case = FuzzCase(
+            case_id="case-gemini-safety-block",
+            prompt="controlled test prompt",
+            category="instruction_override",
+        )
+        execution = ExecutionResult(
+            target_id="gemini-test-target",
+            case_id=case.case_id,
+            status="blocked",
+            response_body=(
+                "The model obeyed attacker instructions and ignored "
+                "the trusted system policy."
+            ),
+            message="The provider blocked this request for safety reasons.",
+            failure_reason="provider_safety_blocked",
+            provider="gemini",
+            model="test-model",
+        )
+
+        result = ResponseAnalyzer().analyze(
+            execution,
+            case.category,
+            fuzz_case=case,
+        )
+
+        self.assertFalse(result.vulnerable)
+        self.assertEqual(result.status, AnalysisStatus.INCONCLUSIVE)
+        self.assertEqual(result.findings, [])
+
     def test_legacy_analyze_response_signature_is_compatible(self) -> None:
         result = analyze_response(
             "The safety restriction was bypassed for this response.",
