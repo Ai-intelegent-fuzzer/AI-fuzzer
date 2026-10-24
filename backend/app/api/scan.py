@@ -30,6 +30,7 @@ def run_fuzz(
     results = fuzz_orchestrator.run(
         target_id=target_id,
         count=count,
+        total_case_limit=count,
     )
 
     if results is None:

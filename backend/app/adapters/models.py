@@ -11,11 +11,17 @@ class TargetType(str, Enum):
     AGENT = "agent"
 
 
+class AIProvider(str, Enum):
+    OPENAI = "openai"
+    GROQ = "groq"
+
+
 class TargetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     target_type: TargetType
     endpoint: HttpUrl
     model: Optional[str] = None
+    provider: AIProvider = AIProvider.OPENAI
     description: Optional[str] = None
 
 

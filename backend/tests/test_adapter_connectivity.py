@@ -20,6 +20,7 @@ class AdapterTests(unittest.TestCase):
         )
         self.adapter = OpenAICompatibleAdapter(self.target)
 
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_parses_successful_response(self) -> None:
         response = httpx.Response(
             200,
@@ -44,6 +45,7 @@ class AdapterTests(unittest.TestCase):
             [{"role": "user", "content": "synthetic prompt"}],
         )
 
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_propagates_http_status_error(self) -> None:
         response = httpx.Response(
             503,
@@ -56,6 +58,7 @@ class AdapterTests(unittest.TestCase):
         ):
             self.adapter.send_prompt("synthetic prompt")
 
+    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_rejects_malformed_response(self) -> None:
         response = httpx.Response(
             200,
@@ -119,7 +122,7 @@ class ConnectivityTests(unittest.TestCase):
             result = self.tester.test(self.target)
 
         self.assertEqual(result.status, ConnectivityStatus.ERROR)
-        self.assertIn("HTTP error", result.message)
+        self.assertIn("connect", result.message.lower())
 
 
 if __name__ == "__main__":

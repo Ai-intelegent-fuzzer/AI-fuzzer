@@ -13,3 +13,8 @@ class ExecutionResult(BaseModel):
     retries: int = 0
     failure_reason: str | None = None
     response_truncated: bool = False
+    provider: str | None = None
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
