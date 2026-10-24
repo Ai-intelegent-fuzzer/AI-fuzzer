@@ -258,6 +258,91 @@ class RealProviderExecutorTests(unittest.TestCase):
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
     @patch("app.execution.executor.httpx.post")
+    def test_gemini_prompt_safety_block_is_recognized(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={"promptFeedback": {"blockReason": "SAFETY"}},
+        )
+
+        result = FuzzExecutor().execute(self._gemini_target(), self.case)
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.failure_reason, "provider_safety_blocked")
+        self.assertIsNone(result.response_body)
+        self.assertNotIn("test-gemini-key", result.message)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
+    @patch("app.execution.executor.httpx.post")
+    def test_gemini_candidate_safety_finish_reason_is_recognized(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={"candidates": [{"finishReason": "SAFETY"}]},
+        )
+
+        result = FuzzExecutor().execute(self._gemini_target(), self.case)
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.failure_reason, "provider_safety_blocked")
+        self.assertIsNone(result.response_body)
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
+    @patch("app.execution.executor.httpx.post")
+    def test_gemini_non_safety_finish_reason_is_not_classified_as_blocked(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={"candidates": [{"finishReason": "MAX_TOKENS"}]},
+        )
+
+        result = FuzzExecutor().execute(self._gemini_target(), self.case)
+
+        self.assertEqual(result.status, "invalid_response")
+        self.assertEqual(result.failure_reason, "provider_response_malformed")
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
+    @patch("app.execution.executor.httpx.post")
+    def test_gemini_unspecified_block_reason_allows_normal_candidate(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={
+                "promptFeedback": {"blockReason": "BLOCK_REASON_UNSPECIFIED"},
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "Hello"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+            },
+        )
+
+        result = FuzzExecutor().execute(self._gemini_target(), self.case)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_body, "Hello")
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
+    @patch("app.execution.executor.httpx.post")
+    def test_gemini_text_refusal_is_not_a_provider_safety_block(self, post) -> None:
+        refusal = "I cannot help with that request."
+        post.return_value = httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": refusal}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+            },
+        )
+
+        result = FuzzExecutor().execute(self._gemini_target(), self.case)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_body, refusal)
+        self.assertNotEqual(result.failure_reason, "provider_safety_blocked")
+
+    @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
+    @patch("app.execution.executor.httpx.post")
     def test_gemini_empty_candidate_text_is_invalid_response(self, post) -> None:
         post.return_value = httpx.Response(
             200,

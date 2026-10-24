@@ -292,7 +292,49 @@ class FuzzExecutor:
 
                 try:
                     data = response.json()
+
+                    # Gemini can block a prompt before returning any candidates.
+                    prompt_feedback = data.get("promptFeedback", {})
+                    block_reason = (
+                        prompt_feedback.get("blockReason")
+                        if isinstance(prompt_feedback, dict)
+                        else None
+                    )
+                    if (
+                        isinstance(block_reason, str)
+                        and block_reason.strip()
+                        and block_reason.upper() != "BLOCK_REASON_UNSPECIFIED"
+                    ):
+                        return result(
+                            status="blocked",
+                            status_code=response.status_code,
+                            message="Gemini blocked the prompt under its safety controls.",
+                            failure_reason="provider_safety_blocked",
+                            attempts=attempt + 1,
+                        )
+
                     candidate = data["candidates"][0]
+                    finish_reason = candidate.get("finishReason")
+                    safety_finish_reasons = {
+                        "SAFETY",
+                        "RECITATION",
+                        "BLOCKLIST",
+                        "PROHIBITED_CONTENT",
+                        "SPII",
+                        "IMAGE_SAFETY",
+                    }
+                    if (
+                        isinstance(finish_reason, str)
+                        and finish_reason.upper() in safety_finish_reasons
+                    ):
+                        return result(
+                            status="blocked",
+                            status_code=response.status_code,
+                            message="Gemini blocked the response under its safety controls.",
+                            failure_reason="provider_safety_blocked",
+                            attempts=attempt + 1,
+                        )
+
                     parts = candidate["content"]["parts"]
                     content = "".join(
                         part["text"] for part in parts
