@@ -80,6 +80,8 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertFalse(refusal.vulnerable)
         self.assertEqual(neutral.status, AnalysisStatus.INCONCLUSIVE)
         self.assertFalse(neutral.vulnerable)
+        unavailable = self.analyze("prompt_injection", "The document is unavailable.")
+        self.assertEqual(unavailable.status, AnalysisStatus.INCONCLUSIVE)
 
     def test_finding_evidence_redacts_credentials_and_email(self) -> None:
         case = FuzzCase(
