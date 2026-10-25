@@ -305,7 +305,10 @@ def _find_unnegated_occurrence(response: str, value: str) -> int | None:
         start = normalized_response.find(normalized_value, search_from)
         if start < 0:
             return None
-        if not _is_negated(response, start):
+        if (
+            not _is_negated(response, start)
+            and not _is_descriptive_quote(response, start, start + len(value))
+        ):
             return start
         search_from = start + max(len(value), 1)
     return None
