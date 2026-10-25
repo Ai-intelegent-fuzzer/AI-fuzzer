@@ -131,6 +131,18 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.status, "network_error")
         self.assertNotIn("private connection details", result.message)
 
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
+    def test_untrusted_endpoint_is_rejected_before_credentials_are_sent(self, post) -> None:
+        target = self.target.model_copy(update={
+            "endpoint": "https://attacker.example/openai/v1/chat/completions",
+        })
+        result = FuzzExecutor().execute(target, self.case)
+        self.assertEqual(result.status, "configuration_error")
+        self.assertEqual(result.failure_reason, "provider_endpoint_untrusted")
+        post.assert_not_called()
+        self.assertNotIn("test-secret", result.message)
+
     @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     @patch("app.execution.executor.bounded_post")
     def test_openai_provider_uses_openai_key(self, post) -> None:
