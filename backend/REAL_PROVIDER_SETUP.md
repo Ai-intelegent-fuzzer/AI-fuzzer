@@ -40,6 +40,17 @@ OpenAI example:
 }
 ```
 
+Gemini example:
+```json
+{
+  "name": "Gemini live model",
+  "target_type": "openai_compatible",
+  "provider": "gemini",
+  "endpoint": "https://generativelanguage.googleapis.com/v1beta",
+  "model": "gemini-2.5-flash"
+}
+```
+
 Use the endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results.
 
 ## Verify inference and run one safe case
