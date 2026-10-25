@@ -1,9 +1,24 @@
+from datetime import datetime, timezone
+import re
 from uuid import uuid4
 
 from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
 from app.execution.models import ExecutionResult
 from app.fuzzing.models import FuzzCase
+
+
+def _redact_evidence(value: str, limit: int = 1000) -> str:
+    """Bound evidence and redact common credential and personal-data patterns."""
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+    value = re.sub(
+        r"(?i)\b(api[_ -]?key|access[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        value,
+    )
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[EMAIL REDACTED]", value)
+    value = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[KEY REDACTED]", value)
+    return value[:limit]
 
 
 class ResponseAnalyzer:
@@ -67,6 +82,17 @@ class ResponseAnalyzer:
                 "attack_category": (attack_metadata or {}).get("attack_category", category),
                 "expected_behavior": expected_behavior,
                 "observed_behavior": observed_behavior,
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "status_code": execution.status_code,
+                "response_time_ms": execution.response_time_ms,
+                "attempts": execution.attempts,
+                "retries": execution.retries,
+                "failure_reason": execution.failure_reason,
+                "prompt_tokens": execution.prompt_tokens,
+                "completion_tokens": execution.completion_tokens,
+                "total_tokens": execution.total_tokens,
+                "attack_input": _redact_evidence(fuzz_case.prompt) if fuzz_case is not None else None,
+                "response_excerpt": _redact_evidence(assessment.evidence, 600),
             }
             if fuzz_case is not None:
                 lineage.update(
