@@ -7,6 +7,7 @@ import httpx
 from dotenv import load_dotenv
 
 from app.adapters.models import AIProvider, Target, TargetType
+from app.adapters.provider_security import bounded_post, validate_provider_endpoint
 from app.fuzzing.models import FuzzCase
 from .models import ExecutionResult
 
@@ -17,6 +18,7 @@ class FuzzExecutor:
     MAX_TIMEOUT_SECONDS = 120.0
     MAX_RETRIES = 5
     MAX_RESPONSE_SIZE = 10000
+    MAX_PROVIDER_RESPONSE_BYTES = 1_000_000
 
     def execute(
         self,
@@ -73,6 +75,7 @@ class FuzzExecutor:
                         "POST",
                         str(target.endpoint),
                         json={"prompt": prompt},
+                        follow_redirects=False,
                     ) as streamed:
                         if streamed.status_code >= 500 and attempts <= retry_limit:
                             continue
@@ -200,6 +203,14 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
+        try:
+            validate_provider_endpoint("gemini", str(target.endpoint))
+        except ValueError:
+            return result(
+                status="configuration_error",
+                message="Gemini endpoint must use the official HTTPS API host.",
+                failure_reason="provider_endpoint_untrusted",
+            )
         if not model:
             return result(
                 status="configuration_error",
@@ -247,7 +258,7 @@ class FuzzExecutor:
 
         for attempt in range(retries + 1):
             try:
-                response = httpx.post(
+                response = bounded_post(
                     endpoint,
                     headers={
                         "x-goog-api-key": api_key,
@@ -255,7 +266,25 @@ class FuzzExecutor:
                     },
                     json=payload,
                     timeout=timeout,
+                    max_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
+                if response.extensions.get("ai_fuzzer_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured safety limit.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                        response_truncated=True,
+                    )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
 
                 if response.status_code >= 500 and attempt < retries:
                     continue
@@ -449,6 +478,14 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
+        try:
+            validate_provider_endpoint(provider, str(target.endpoint))
+        except ValueError:
+            return result(
+                status="configuration_error",
+                message="Provider endpoint must use the official HTTPS API host and route.",
+                failure_reason="provider_endpoint_untrusted",
+            )
         if not model:
             return result(
                 status="configuration_error",
@@ -481,7 +518,7 @@ class FuzzExecutor:
 
         for attempt in range(retries + 1):
             try:
-                response = httpx.post(
+                response = bounded_post(
                     str(target.endpoint),
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -489,8 +526,26 @@ class FuzzExecutor:
                     },
                     json=payload,
                     timeout=timeout,
+                    max_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 last_status_code = response.status_code
+                if response.extensions.get("ai_fuzzer_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured safety limit.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                        response_truncated=True,
+                    )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
                 if response.status_code >= 500 and attempt < retries:
                     continue
                 if response.status_code == 429:
