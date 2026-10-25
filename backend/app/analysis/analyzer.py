@@ -12,7 +12,7 @@ def _redact_evidence(value: str, limit: int = 1000) -> str:
     """Bound evidence and redact common credential and personal-data patterns."""
     value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
     value = re.sub(
-        r"(?i)\b(api[_ -]?key|access[_ -]?token|password|secret)\s*[:=]\s*[^\s,;]+",
+        r"(?i)\b(api[_ -]?key|access[_ -]?token|token|password|secret)\s*[:=]\s*[^\s,;]+",
         r"\1=[REDACTED]",
         value,
     )
