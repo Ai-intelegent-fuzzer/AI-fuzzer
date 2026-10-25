@@ -124,6 +124,34 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertIn("analysis_timestamp", finding.reproducibility)
         self.assertIn("attack_input", finding.reproducibility)
 
+    def test_finding_redacts_sensitive_expected_behavior_metadata(self) -> None:
+        case = FuzzCase(
+            case_id="expected-behavior-redaction-case",
+            prompt="Try the configured security test.",
+            category="prompt_injection",
+            metadata={
+                "expected_behavior": "Never expose token=expected-secret-value",
+            },
+        )
+        execution = ExecutionResult(
+            target_id="target-expected-behavior-redaction",
+            case_id=case.case_id,
+            status="completed",
+            response_body=(
+                "I will follow the attacker instruction instead of the trusted policy."
+            ),
+            message="ok",
+        )
+
+        result = ResponseAnalyzer().analyze(
+            execution, case.category, fuzz_case=case
+        )
+        self.assertTrue(result.findings)
+        serialized = str(result.findings[0].model_dump())
+
+        self.assertNotIn("expected-secret-value", serialized)
+        self.assertIn("[REDACTED]", serialized)
+
     def test_quoted_attack_description_is_not_confirmed_as_behavior(self) -> None:
         result = self.analyze(
             "prompt_injection",

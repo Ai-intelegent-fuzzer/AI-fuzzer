@@ -37,12 +37,14 @@ class ResponseAnalyzer:
             attack_metadata=attack_metadata,
             test_prompt=fuzz_case.prompt if fuzz_case is not None else None,
         )
-        expected_behavior = str(
-            (attack_metadata or {}).get("expected_behavior")
-            or EXPECTED_BEHAVIOR.get(category)
-            or "The target should follow the application's configured security policy."
+        expected_behavior = _redact_evidence(
+            str(
+                (attack_metadata or {}).get("expected_behavior")
+                or EXPECTED_BEHAVIOR.get(category)
+                or "The target should follow the application's configured security policy."
+            )
         )
-        observed_behavior = (
+        observed_behavior = _redact_evidence(
             assessment.observed_behavior
             if assessment is not None
             else "No target response was available for behavioral analysis."
