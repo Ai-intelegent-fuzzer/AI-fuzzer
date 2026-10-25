@@ -58,7 +58,22 @@ class ResponseAnalyzer:
             if execution_completed and assessment is not None
             else False
         )
-        indicators = assessment.indicators if assessment is not None else []
+        indicators = (
+            [
+                indicator.model_copy(
+                    update={
+                        "evidence": _redact_evidence(indicator.evidence, 600),
+                        "metadata": {
+                            key: _redact_evidence(value, 300) if isinstance(value, str) else value
+                            for key, value in indicator.metadata.items()
+                        },
+                    }
+                )
+                for indicator in assessment.indicators
+            ]
+            if assessment is not None
+            else []
+        )
         attack_id = (attack_metadata or {}).get("attack_id")
         attack_name = (attack_metadata or {}).get("attack_name")
 
@@ -150,7 +165,7 @@ class ResponseAnalyzer:
                     ),
                     severity=assessment.severity,
                     confidence=assessment.confidence,
-                    evidence=assessment.evidence,
+                    evidence=_redact_evidence(assessment.evidence, 600),
                     recommendation=assessment.recommendation,
                     attack_id=str(attack_id) if attack_id else None,
                     attack_category=str(
