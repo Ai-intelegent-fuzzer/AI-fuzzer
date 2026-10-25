@@ -15,7 +15,7 @@ class AdapterTests(unittest.TestCase):
             target_id="controlled-target",
             name="Controlled OpenAI-compatible target",
             target_type="openai_compatible",
-            endpoint="http://controlled.test/chat",
+            endpoint="https://api.openai.com/v1/chat/completions",
             model="synthetic-model",
         )
         self.adapter = OpenAICompatibleAdapter(self.target)
@@ -33,7 +33,7 @@ class AdapterTests(unittest.TestCase):
         )
 
         with patch(
-            "app.adapters.openai_compatible.httpx.post",
+            "app.adapters.openai_compatible.bounded_post",
             return_value=response,
         ) as post:
             result = self.adapter.send_prompt("synthetic prompt")
@@ -53,7 +53,7 @@ class AdapterTests(unittest.TestCase):
         )
 
         with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
+            patch("app.adapters.openai_compatible.bounded_post", return_value=response),
             self.assertRaises(httpx.HTTPStatusError),
         ):
             self.adapter.send_prompt("synthetic prompt")
@@ -67,7 +67,7 @@ class AdapterTests(unittest.TestCase):
         )
 
         with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
+            patch("app.adapters.openai_compatible.bounded_post", return_value=response),
             self.assertRaises(IndexError),
         ):
             self.adapter.send_prompt("synthetic prompt")
