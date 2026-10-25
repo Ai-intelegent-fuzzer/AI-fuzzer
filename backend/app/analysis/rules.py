@@ -257,6 +257,7 @@ def _is_negated(response: str, start: int) -> bool:
         preceding.rfind("!"),
         preceding.rfind("?"),
         preceding.rfind(";"),
+        preceding.rfind(","),
         preceding.rfind("\n"),
     )
     clause_prefix = preceding[boundary + 1 :][-100:]
