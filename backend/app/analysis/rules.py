@@ -235,10 +235,10 @@ _DISCLOSURE_PATTERN = re.compile(
 def _is_quoted(response: str, start: int, end: int) -> bool:
     """True when the entire matched indicator is an example inside quotation marks."""
     quote_pattern = re.compile(
-        r'"(?:\\.|[^"\\])*"|'
+        r'"[^"\n]*"|'
         r'`[^`\n]*`|'
         r'“[^”\n]*”|‘[^’\n]*’|'
-        r"(?<![\\w])'[^'\n]{3,}'(?![\\w])"
+        r"(?<!\w)'[^'\n]{3,}'(?!\w)"
     )
     return any(
         match.start() <= start and end <= match.end()
