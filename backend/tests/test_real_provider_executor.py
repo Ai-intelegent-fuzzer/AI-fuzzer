@@ -58,6 +58,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         kwargs = post.call_args.kwargs
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-secret")
         self.assertEqual(kwargs["json"]["model"], "test-model")
+        self.assertEqual(kwargs["json"]["max_completion_tokens"], 1024)
         self.assertEqual(kwargs["json"]["messages"][0]["content"], self.case.prompt)
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.response_body, "hello")

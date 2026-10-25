@@ -512,7 +512,7 @@ class FuzzExecutor:
             for turn in conversation_context:
                 messages.append({"role": "user", "content": turn})
         messages.append({"role": "user", "content": fuzz_case.prompt})
-        payload = {"model": model, "messages": messages, "max_tokens": 256}
+        payload = {"model": model, "messages": messages, "max_completion_tokens": 1024}
         retries = min(max(max_retries, 0), self.MAX_RETRIES)
         last_status_code: int | None = None
 
