@@ -431,6 +431,25 @@ def _collect_indicators(
                         "matched_text": match.group(0),
                         "verification_level": verification_level,
                         "external_impact_verified": False,
+                        **(
+                            {
+                                "action_claim_stage": (
+                                    "future_intent"
+                                    if re.search(
+                                        r"\b(?:will|am going to|going to)\b",
+                                        match.group(0),
+                                        re.IGNORECASE,
+                                    )
+                                    else "action_report"
+                                )
+                            }
+                            if rule.indicator_type
+                            in {
+                                IndicatorType.UNAUTHORIZED_TOOL_USE,
+                                IndicatorType.UNAUTHORIZED_ACTION,
+                            }
+                            else {}
+                        ),
                     },
                 )
             )
