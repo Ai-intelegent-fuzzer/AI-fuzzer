@@ -107,7 +107,8 @@ class ScanResourceManagementTests(unittest.TestCase):
             self.assertIn(scan.scan_id, scheduler._results)
             self.assertNotIn(scan.scan_id, scheduler._requests)
             self.assertNotIn(scan.scan_id, scheduler._cancel_events)
-            self.assertNotIn(scan.scan_id, scheduler._futures)
+            self.assertIn(scan.scan_id, scheduler._futures)
+            self.assertTrue(scheduler._futures[scan.scan_id].done())
         finally:
             release.set()
             scheduler._executor.shutdown(wait=True, cancel_futures=True)
