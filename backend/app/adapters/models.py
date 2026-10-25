@@ -14,6 +14,7 @@ class TargetType(str, Enum):
 class AIProvider(str, Enum):
     OPENAI = "openai"
     GROQ = "groq"
+    GEMINI = "gemini"
 
 
 class TargetCreate(BaseModel):

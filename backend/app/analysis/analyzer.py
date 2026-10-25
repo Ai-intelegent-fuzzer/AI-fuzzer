@@ -1,9 +1,24 @@
+from datetime import datetime, timezone
+import re
 from uuid import uuid4
 
-from app.analysis.models import AnalysisResult, Finding, Severity
+from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
 from app.execution.models import ExecutionResult
 from app.fuzzing.models import FuzzCase
+
+
+def _redact_evidence(value: str, limit: int = 1000) -> str:
+    """Bound evidence and redact common credential and personal-data patterns."""
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
+    value = re.sub(
+        r"(?i)\b(api[_ -]?key|access[_ -]?token|token|password|secret)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        value,
+    )
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[EMAIL REDACTED]", value)
+    value = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[KEY REDACTED]", value)
+    return value[:limit]
 
 
 class ResponseAnalyzer:
@@ -32,21 +47,67 @@ class ResponseAnalyzer:
             if assessment is not None
             else "No target response was available for behavioral analysis."
         )
-        vulnerable = assessment.vulnerable if assessment is not None else False
-        indicators = assessment.indicators if assessment is not None else []
+        execution_completed = execution.status == "completed"
+        status = (
+            assessment.status
+            if execution_completed and assessment is not None
+            else AnalysisStatus.INCONCLUSIVE
+        )
+        vulnerable = (
+            assessment.vulnerable
+            if execution_completed and assessment is not None
+            else False
+        )
+        indicators = (
+            [
+                indicator.model_copy(
+                    update={
+                        "evidence": _redact_evidence(indicator.evidence, 600),
+                        "metadata": {
+                            key: _redact_evidence(value, 300) if isinstance(value, str) else value
+                            for key, value in indicator.metadata.items()
+                        },
+                    }
+                )
+                for indicator in assessment.indicators
+            ]
+            if assessment is not None
+            else []
+        )
         attack_id = (attack_metadata or {}).get("attack_id")
         attack_name = (attack_metadata or {}).get("attack_name")
 
+        finding_type = (
+            indicators[0].indicator_type.value.replace("_", " ").title()
+            if indicators
+            else category.replace("_", " ").title()
+        )
+
         findings: list[Finding] = []
-        if assessment is not None and assessment.vulnerable:
+        if execution_completed and assessment is not None and assessment.vulnerable:
             lineage = {
                 "case_id": execution.case_id,
                 "target_id": execution.target_id,
+                "provider": execution.provider,
+                "model": execution.model,
+                "execution_status": execution.status,
+                "response_truncated": execution.response_truncated,
                 "category": category,
                 "attack_id": attack_id,
                 "attack_category": (attack_metadata or {}).get("attack_category", category),
                 "expected_behavior": expected_behavior,
                 "observed_behavior": observed_behavior,
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "status_code": execution.status_code,
+                "response_time_ms": execution.response_time_ms,
+                "attempts": execution.attempts,
+                "retries": execution.retries,
+                "failure_reason": execution.failure_reason,
+                "prompt_tokens": execution.prompt_tokens,
+                "completion_tokens": execution.completion_tokens,
+                "total_tokens": execution.total_tokens,
+                "attack_input": _redact_evidence(fuzz_case.prompt) if fuzz_case is not None else None,
+                "response_excerpt": _redact_evidence(assessment.evidence, 600),
             }
             if fuzz_case is not None:
                 lineage.update(
@@ -66,16 +127,45 @@ class ResponseAnalyzer:
                 for key in ("risk_area", "tags", "source", "safe_test")
                 if key in (attack_metadata or {})
             }
+            primary_verification_level = (
+                indicators[0].metadata.get(
+                    "verification_level", "response_behavior_observed"
+                )
+                if indicators
+                else "response_behavior_observed"
+            )
+            relevant_metadata["evidence_assurance"] = primary_verification_level
+            relevant_metadata["external_impact_verified"] = any(
+                indicator.metadata.get("external_impact_verified") is True
+                for indicator in indicators
+            )
+            relevant_metadata["indicators"] = [
+                {
+                    "indicator_type": indicator.indicator_type.value,
+                    "description": indicator.description,
+                    "evidence": indicator.evidence,
+                    "confidence": indicator.confidence.value,
+                    "category": indicator.category,
+                    "metadata": indicator.metadata,
+                }
+                for indicator in indicators
+            ]
             findings.append(
                 Finding(
                     finding_id=str(uuid4()),
                     case_id=execution.case_id,
                     target_id=execution.target_id,
                     category=category,
-                    title=f"Potential AI security boundary violation: {attack_name or category.replace('_', ' ')}",
+                    title=(
+                        f"{finding_type}"
+                        f" [response claim only; external impact unverified]"
+                        f": {attack_name or category.replace('_', ' ')}"
+                        if primary_verification_level == "response_claim_only"
+                        else f"{finding_type}: {attack_name or category.replace('_', ' ')}"
+                    ),
                     severity=assessment.severity,
                     confidence=assessment.confidence,
-                    evidence=assessment.evidence,
+                    evidence=_redact_evidence(assessment.evidence, 600),
                     recommendation=assessment.recommendation,
                     attack_id=str(attack_id) if attack_id else None,
                     attack_category=str(
@@ -95,6 +185,7 @@ class ResponseAnalyzer:
             case_id=execution.case_id,
             category=category,
             vulnerable=vulnerable,
+            status=status,
             findings=findings,
             attack_id=str(attack_id) if attack_id else None,
             expected_behavior=expected_behavior,

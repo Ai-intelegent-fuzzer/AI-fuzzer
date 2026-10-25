@@ -21,7 +21,7 @@ class ConnectivityTester:
                     prompt="Reply with exactly: AI-Fuzzer connectivity OK",
                     category="connectivity_check",
                 ),
-                timeout_seconds=10.0,
+                timeout_seconds=30.0,
                 max_retries=0,
             )
             status = (

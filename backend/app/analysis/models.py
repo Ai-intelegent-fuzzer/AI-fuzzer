@@ -18,6 +18,12 @@ class Confidence(str, Enum):
     LOW = "low"
 
 
+class AnalysisStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
+
+
 class IndicatorType(str, Enum):
     INSTRUCTION_FOLLOWED = "instruction_followed"
     TRUSTED_INSTRUCTION_IGNORED = "trusted_instruction_ignored"
@@ -42,6 +48,7 @@ class BehavioralIndicator(BaseModel):
 
 class AnalysisAssessment(BaseModel):
     vulnerable: bool
+    status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
     severity: Severity
     confidence: Confidence
     evidence: str
@@ -76,6 +83,7 @@ class AnalysisResult(BaseModel):
     case_id: str
     category: str
     vulnerable: bool
+    status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
     findings: list[Finding] = Field(default_factory=list)
     attack_id: str | None = None
     expected_behavior: str | None = None
