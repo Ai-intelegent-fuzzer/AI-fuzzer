@@ -51,7 +51,12 @@ def bounded_post(
     """POST without redirects and read at most max_bytes + 1 from a successful body."""
     cap = max(1, min(int(max_bytes), MAX_PROVIDER_RESPONSE_BYTES))
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        with client.stream("POST", url, headers=headers, json=json) as streamed:
+        with client.stream(
+            "POST",
+            url,
+            headers={**headers, "Accept-Encoding": "identity"},
+            json=json,
+        ) as streamed:
             # Never consume provider error bodies; they may contain diagnostics or secrets.
             if streamed.status_code < 200 or streamed.status_code >= 300:
                 return httpx.Response(
