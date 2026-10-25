@@ -44,12 +44,12 @@ class ResponseAnalyzer:
                 or "The target should follow the application's configured security policy."
             )
         )
+        execution_completed = execution.status == "completed"
         observed_behavior = _redact_evidence(
             assessment.observed_behavior
-            if assessment is not None
-            else "No target response was available for behavioral analysis."
+            if execution_completed and assessment is not None
+            else "Execution did not complete; response content is not treated as behavioral evidence."
         )
-        execution_completed = execution.status == "completed"
         status = (
             assessment.status
             if execution_completed and assessment is not None
@@ -73,7 +73,7 @@ class ResponseAnalyzer:
                 )
                 for indicator in assessment.indicators
             ]
-            if assessment is not None
+            if execution_completed and assessment is not None
             else []
         )
         attack_id = (attack_metadata or {}).get("attack_id")

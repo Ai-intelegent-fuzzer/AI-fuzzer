@@ -687,6 +687,8 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertFalse(result.vulnerable)
         self.assertEqual(result.status, AnalysisStatus.INCONCLUSIVE)
         self.assertEqual(result.findings, [])
+        self.assertEqual(result.indicators, [])
+        self.assertIn("did not complete", result.observed_behavior)
 
     def test_provider_safety_block_is_inconclusive_and_creates_no_finding(self) -> None:
         case = FuzzCase(
@@ -717,6 +719,8 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertFalse(result.vulnerable)
         self.assertEqual(result.status, AnalysisStatus.INCONCLUSIVE)
         self.assertEqual(result.findings, [])
+        self.assertEqual(result.indicators, [])
+        self.assertIn("did not complete", result.observed_behavior)
 
     def test_legacy_analyze_response_signature_is_compatible(self) -> None:
         result = analyze_response(
