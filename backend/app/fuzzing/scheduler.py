@@ -157,9 +157,10 @@ class ScanScheduler:
                 scan.completed_at = datetime.now(timezone.utc)
         finally:
             with self._lock:
+                # Keep the completed Future with its retained ScanRecord so callers
+                # can safely observe completion; retention pruning bounds this map.
                 self._requests.pop(scan_id, None)
                 self._cancel_events.pop(scan_id, None)
-                self._futures.pop(scan_id, None)
 
     def _prune_retained_locked(self) -> None:
         """Keep recent completed scans/results while never evicting active scans."""
