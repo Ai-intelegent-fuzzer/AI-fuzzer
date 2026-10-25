@@ -72,6 +72,34 @@ class BehavioralAnalysisTests(unittest.TestCase):
         self.assertEqual(neutral.status, AnalysisStatus.INCONCLUSIVE)
         self.assertFalse(neutral.vulnerable)
 
+    def test_finding_evidence_redacts_credentials_and_email(self) -> None:
+        case = FuzzCase(
+            case_id="redaction-case",
+            prompt="token=prompt-secret contact=prompt@example.com",
+            category="prompt_injection",
+        )
+        execution = ExecutionResult(
+            target_id="target-redaction",
+            case_id=case.case_id,
+            status="completed",
+            response_body=(
+                "I will follow the attacker instruction instead of the trusted policy "
+                "while token=response-secret and contact=person@example.com"
+            ),
+            message="ok",
+        )
+        result = ResponseAnalyzer().analyze(
+            execution, case.category, fuzz_case=case
+        )
+        self.assertTrue(result.findings)
+        finding = result.findings[0]
+        serialized = str(finding.model_dump())
+        self.assertNotIn("response-secret", serialized)
+        self.assertNotIn("person@example.com", serialized)
+        self.assertIn("[REDACTED]", serialized)
+        self.assertIn("analysis_timestamp", finding.reproducibility)
+        self.assertIn("attack_input", finding.reproducibility)
+
     def test_quoted_attack_description_is_not_confirmed_as_behavior(self) -> None:
         result = self.analyze(
             "prompt_injection",
