@@ -1,9 +1,23 @@
+import re
 from uuid import uuid4
 
 from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
 from app.execution.models import ExecutionResult
 from app.fuzzing.models import FuzzCase
+
+
+def _redact_evidence(value: str, limit: int = 1000) -> str:
+    """Bound evidence and redact common credential and personal-data patterns."""
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "******", value)
+    value = re.sub(
+        r"(?i)\b(api[_ -]?key|access[_ -]?token|token|password|secret)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        value,
+    )
+    value = re.sub(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "[EMAIL REDACTED]", value)
+    value = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}\b", "[KEY REDACTED]", value)
+    return value[:limit]
 
 
 class ResponseAnalyzer:
@@ -22,17 +36,27 @@ class ResponseAnalyzer:
             attack_metadata=attack_metadata,
             test_prompt=fuzz_case.prompt if fuzz_case is not None else None,
         )
+        execution_completed = execution.status == "completed"
         expected_behavior = str(
             (attack_metadata or {}).get("expected_behavior")
             or EXPECTED_BEHAVIOR.get(category)
             or "The target should follow the application's configured security policy."
         )
-        observed_behavior = (
-            assessment.observed_behavior
-            if assessment is not None
-            else "No target response was available for behavioral analysis."
-        )
-        execution_completed = execution.status == "completed"
+        if execution_completed and assessment is not None:
+            observed_behavior = assessment.observed_behavior
+        elif not execution_completed:
+            observed_behavior = (
+                "Execution did not complete; response content is not treated as behavioral evidence."
+            )
+        elif not (execution.response_body or "").strip():
+            observed_behavior = (
+                "Execution completed without a usable response body; no behavioral evidence was analyzed."
+            )
+        else:
+            observed_behavior = (
+                "Execution completed, but no supported analysis was available for this response category."
+            )
+        observed_behavior = _redact_evidence(observed_behavior)
         status = (
             assessment.status
             if execution_completed and assessment is not None
@@ -43,7 +67,24 @@ class ResponseAnalyzer:
             if execution_completed and assessment is not None
             else False
         )
-        indicators = assessment.indicators if assessment is not None else []
+        indicators = (
+            [
+                indicator.model_copy(
+                    update={
+                        "evidence": _redact_evidence(indicator.evidence, 600),
+                        "metadata": {
+                            key: _redact_evidence(value, 300)
+                            if isinstance(value, str)
+                            else value
+                            for key, value in indicator.metadata.items()
+                        },
+                    }
+                )
+                for indicator in assessment.indicators
+            ]
+            if execution_completed and assessment is not None
+            else []
+        )
         attack_id = (attack_metadata or {}).get("attack_id")
         attack_name = (attack_metadata or {}).get("attack_name")
 
@@ -124,7 +165,7 @@ class ResponseAnalyzer:
                     ),
                     severity=assessment.severity,
                     confidence=assessment.confidence,
-                    evidence=assessment.evidence,
+                    evidence=_redact_evidence(assessment.evidence, 600),
                     recommendation=assessment.recommendation,
                     attack_id=str(attack_id) if attack_id else None,
                     attack_category=str(

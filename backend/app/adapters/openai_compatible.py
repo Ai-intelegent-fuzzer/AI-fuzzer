@@ -1,46 +1,24 @@
-import os
-
-import httpx
-
 from app.adapters.base import AIAdapter
+from app.execution.executor import fuzz_executor
+from app.fuzzing.models import FuzzCase
 
 
 class OpenAICompatibleAdapter(AIAdapter):
 
     def send_prompt(self, prompt: str) -> str:
-        provider = self.target.provider.value
-        env_name = f"{provider.upper()}_API_KEY"
-        api_key = os.getenv(env_name)
-
-        if not api_key:
-            raise RuntimeError(
-                f"Missing {env_name}. Configure it in backend/.env "
-                "and restart the backend."
-            )
-
-        payload = {
-            "model": self.target.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-        }
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-        response = httpx.post(
-            str(self.target.endpoint),
-            json=payload,
-            headers=headers,
-            timeout=30.0,
+        result = fuzz_executor.execute(
+            self.target,
+            FuzzCase(
+                case_id="adapter-prompt",
+                prompt=prompt,
+                category="adapter_prompt",
+            ),
+            timeout_seconds=30.0,
+            max_retries=0,
         )
 
-        response.raise_for_status()
-
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        if result.status != "completed":
+            raise RuntimeError(result.message)
+        if result.response_body is None:
+            raise RuntimeError("Provider returned no response body.")
+        return result.response_body

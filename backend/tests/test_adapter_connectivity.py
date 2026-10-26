@@ -7,6 +7,7 @@ from app.adapters.models import Target
 from app.adapters.openai_compatible import OpenAICompatibleAdapter
 from app.connectivity.models import ConnectivityStatus
 from app.connectivity.tester import ConnectivityTester
+from app.execution.models import ExecutionResult
 
 
 class AdapterTests(unittest.TestCase):
@@ -15,60 +16,61 @@ class AdapterTests(unittest.TestCase):
             target_id="controlled-target",
             name="Controlled OpenAI-compatible target",
             target_type="openai_compatible",
-            endpoint="http://controlled.test/chat",
+            endpoint="https://api.openai.com/v1/chat/completions",
             model="synthetic-model",
         )
         self.adapter = OpenAICompatibleAdapter(self.target)
 
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_parses_successful_response(self) -> None:
-        response = httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": "synthetic response"}}
-                ]
-            },
-            request=httpx.Request("POST", str(self.target.endpoint)),
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="completed",
+            response_body="synthetic response",
+            message="ok",
         )
 
         with patch(
-            "app.adapters.openai_compatible.httpx.post",
-            return_value=response,
-        ) as post:
+            "app.adapters.openai_compatible.fuzz_executor.execute",
+            return_value=execution,
+        ) as execute:
             result = self.adapter.send_prompt("synthetic prompt")
 
         self.assertEqual(result, "synthetic response")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "synthetic-model")
-        self.assertEqual(
-            post.call_args.kwargs["json"]["messages"],
-            [{"role": "user", "content": "synthetic prompt"}],
-        )
+        self.assertEqual(execute.call_args.args[0], self.target)
+        self.assertEqual(execute.call_args.args[1].prompt, "synthetic prompt")
 
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_propagates_http_status_error(self) -> None:
-        response = httpx.Response(
-            503,
-            request=httpx.Request("POST", str(self.target.endpoint)),
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="authentication_error",
+            message="Provider rejected the API credentials or access.",
         )
 
         with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
-            self.assertRaises(httpx.HTTPStatusError),
+            patch(
+                "app.adapters.openai_compatible.fuzz_executor.execute",
+                return_value=execution,
+            ),
+            self.assertRaisesRegex(RuntimeError, "rejected the API credentials"),
         ):
             self.adapter.send_prompt("synthetic prompt")
 
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_rejects_malformed_response(self) -> None:
-        response = httpx.Response(
-            200,
-            json={"choices": []},
-            request=httpx.Request("POST", str(self.target.endpoint)),
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="completed",
+            message="ok",
         )
 
         with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
-            self.assertRaises(IndexError),
+            patch(
+                "app.adapters.openai_compatible.fuzz_executor.execute",
+                return_value=execution,
+            ),
+            self.assertRaisesRegex(RuntimeError, "no response body"),
         ):
             self.adapter.send_prompt("synthetic prompt")
 

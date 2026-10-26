@@ -2,6 +2,7 @@ import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
@@ -13,10 +14,100 @@ from .models import ExecutionResult
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
+def _is_trusted_provider_endpoint(target: Target) -> bool:
+    try:
+        endpoint = urlsplit(str(target.endpoint))
+        port = endpoint.port
+    except ValueError:
+        return False
+
+    if (
+        endpoint.scheme.lower() != "https"
+        or endpoint.username is not None
+        or endpoint.password is not None
+        or endpoint.query
+        or endpoint.fragment
+        or port not in (None, 443)
+    ):
+        return False
+
+    path = endpoint.path.rstrip("/")
+    if target.provider == AIProvider.OPENAI:
+        return endpoint.hostname == "api.openai.com" and path == "/v1/chat/completions"
+    if target.provider == AIProvider.GROQ:
+        return (
+            endpoint.hostname == "api.groq.com"
+            and path == "/openai/v1/chat/completions"
+        )
+    if target.provider == AIProvider.GEMINI:
+        return endpoint.hostname == "generativelanguage.googleapis.com" and (
+            path in {"/v1", "/v1beta"}
+            or (
+                path.startswith(("/v1/models/", "/v1beta/models/"))
+                and path.count("/") == 3
+                and bool(path.rsplit("/", 1)[-1])
+            )
+        )
+    return False
+
+
+def _post_provider_request(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    timeout: float,
+    max_response_bytes: int,
+) -> httpx.Response:
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        with client.stream(
+            "POST",
+            url,
+            headers=headers,
+            json=payload,
+        ) as streamed:
+            content = bytearray()
+            too_large = False
+            if 200 <= streamed.status_code < 300:
+                for chunk in streamed.iter_bytes(chunk_size=8192):
+                    remaining = max_response_bytes + 1 - len(content)
+                    content.extend(chunk[:remaining])
+                    if len(content) > max_response_bytes:
+                        too_large = True
+                        break
+
+            # iter_bytes() yields decoded content. Remove headers that
+            # describe the original wire representation before rebuilding it.
+            response_headers = {
+                key: value
+                for key, value in streamed.headers.items()
+                if key.lower() not in {
+                    "content-encoding",
+                    "content-length",
+                    "transfer-encoding",
+                }
+            }
+            response = httpx.Response(
+                status_code=streamed.status_code,
+                headers=response_headers,
+                content=bytes(content[:max_response_bytes]),
+                request=streamed.request,
+            )
+            response.extensions["provider_response_too_large"] = too_large
+            return response
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 class FuzzExecutor:
     MAX_TIMEOUT_SECONDS = 120.0
     MAX_RETRIES = 5
     MAX_RESPONSE_SIZE = 10000
+    MAX_PROVIDER_RESPONSE_BYTES = 256_000
 
     def execute(
         self,
@@ -200,6 +291,12 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
+        if not _is_trusted_provider_endpoint(target):
+            return result(
+                status="configuration_error",
+                message="Gemini endpoint must use the official HTTPS API endpoint.",
+                failure_reason="provider_endpoint_untrusted",
+            )
         if not model:
             return result(
                 status="configuration_error",
@@ -235,7 +332,7 @@ class FuzzExecutor:
                     "parts": [{"text": prompt}],
                 }
             ],
-            "generationConfig": {"maxOutputTokens": 256},
+            "generationConfig": {"maxOutputTokens": 256, "thinkingConfig": {"thinkingLevel": "low"}},
         }
         system_instruction = fuzz_case.metadata.get(
             "security_test_system_instruction"
@@ -247,14 +344,15 @@ class FuzzExecutor:
 
         for attempt in range(retries + 1):
             try:
-                response = httpx.post(
+                response = _post_provider_request(
                     endpoint,
                     headers={
                         "x-goog-api-key": api_key,
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    payload=payload,
                     timeout=timeout,
+                    max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
 
                 if response.status_code >= 500 and attempt < retries:
@@ -278,6 +376,15 @@ class FuzzExecutor:
                         attempts=attempt + 1,
                     )
 
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Gemini endpoint redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
+
                 if response.status_code >= 400:
                     return result(
                         status="target_error",
@@ -287,6 +394,15 @@ class FuzzExecutor:
                             "Check the endpoint, model, and API access."
                         ),
                         failure_reason="provider_request_rejected",
+                        attempts=attempt + 1,
+                    )
+
+                if response.extensions.get("provider_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Gemini response exceeded the configured provider response bound.",
+                        failure_reason="provider_response_too_large",
                         attempts=attempt + 1,
                     )
 
@@ -360,16 +476,20 @@ class FuzzExecutor:
                         attempts=attempt + 1,
                     )
 
-                usage = data.get("usageMetadata") or {}
+                usage = data.get("usageMetadata")
+                if not isinstance(usage, dict):
+                    usage = {}
                 return result(
                     status="completed",
                     status_code=response.status_code,
                     message="Real Gemini inference completed.",
                     response_body=content[:limit],
                     attempts=attempt + 1,
-                    prompt_tokens=usage.get("promptTokenCount"),
-                    completion_tokens=usage.get("candidatesTokenCount"),
-                    total_tokens=usage.get("totalTokenCount"),
+                    prompt_tokens=_token_count(usage.get("promptTokenCount")),
+                    completion_tokens=_token_count(
+                        usage.get("candidatesTokenCount")
+                    ),
+                    total_tokens=_token_count(usage.get("totalTokenCount")),
                     response_truncated=len(content) > limit,
                 )
 
@@ -449,6 +569,12 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
+        if not _is_trusted_provider_endpoint(target):
+            return result(
+                status="configuration_error",
+                message=f"{provider.title()} endpoint must use its official HTTPS API endpoint.",
+                failure_reason="provider_endpoint_untrusted",
+            )
         if not model:
             return result(
                 status="configuration_error",
@@ -475,20 +601,27 @@ class FuzzExecutor:
             for turn in conversation_context:
                 messages.append({"role": "user", "content": turn})
         messages.append({"role": "user", "content": fuzz_case.prompt})
-        payload = {"model": model, "messages": messages, "max_tokens": 256}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": 1024,
+        }
+        if target.provider == AIProvider.GROQ:
+            payload["include_reasoning"] = False
         retries = min(max(max_retries, 0), self.MAX_RETRIES)
         last_status_code: int | None = None
 
         for attempt in range(retries + 1):
             try:
-                response = httpx.post(
+                response = _post_provider_request(
                     str(target.endpoint),
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    payload=payload,
                     timeout=timeout,
+                    max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 last_status_code = response.status_code
                 if response.status_code >= 500 and attempt < retries:
@@ -517,6 +650,22 @@ class FuzzExecutor:
                         failure_reason="provider_request_rejected",
                         attempts=attempt + 1,
                     )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider endpoint redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
+                if response.extensions.get("provider_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured provider response bound.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                    )
                 try:
                     data = response.json()
                     choices = data["choices"]
@@ -531,7 +680,17 @@ class FuzzExecutor:
                         failure_reason="provider_response_malformed",
                         attempts=attempt + 1,
                     )
-                usage = data.get("usage") or {}
+                if not content.strip():
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider returned an empty chat-completions response.",
+                        failure_reason="provider_response_empty",
+                        attempts=attempt + 1,
+                    )
+                usage = data.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
                 body = content[:limit]
                 return result(
                     status="completed",
@@ -539,9 +698,11 @@ class FuzzExecutor:
                     message="Real provider inference completed.",
                     response_body=body,
                     attempts=attempt + 1,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    total_tokens=usage.get("total_tokens"),
+                    prompt_tokens=_token_count(usage.get("prompt_tokens")),
+                    completion_tokens=_token_count(
+                        usage.get("completion_tokens")
+                    ),
+                    total_tokens=_token_count(usage.get("total_tokens")),
                     response_truncated=len(content) > limit,
                 )
             except httpx.TimeoutException:

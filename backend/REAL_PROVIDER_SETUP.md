@@ -5,10 +5,11 @@ AI-Fuzzer can send generated test prompts to an authorized model using the OpenA
 ## Configure a provider
 
 1. From the repository root, copy `backend/.env.example` to `backend/.env`.
-2. Add your own provider key to `GROQ_API_KEY` or `OPENAI_API_KEY`. Do not paste keys into source code, issue reports, scan prompts, or chat.
+2. Add your own provider key to `GROQ_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Do not paste keys into source code, issue reports, scan prompts, or chat.
 3. Start the backend from `backend/` so Python can load dependencies. The executor also loads the local `.env` by file path.
 4. For Groq, create an authorized key in the official console: https://console.groq.com/ . Set `GROQ_MODEL` to a model currently available to your account.
 5. For OpenAI, use an authorized API key and a model available to that project. Set `OPENAI_MODEL` accordingly.
+6. For Gemini, use an authorized API key and set `GEMINI_MODEL` to a model available to your account.
 
 Keys and model access are controlled by the provider account. The default model strings are examples, not a guarantee of account access.
 
@@ -39,7 +40,18 @@ OpenAI example:
 }
 ```
 
-Use the endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results.
+Gemini example:
+```json
+{
+  "name": "Gemini live model",
+  "target_type": "openai_compatible",
+  "provider": "gemini",
+  "endpoint": "https://generativelanguage.googleapis.com/v1beta",
+  "model": "gemini-2.5-flash"
+}
+```
+
+For OpenAI and Groq, use the official endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results. Gemini uses the official `generativelanguage.googleapis.com` HTTPS endpoint and sends its key in the `x-goog-api-key` header.
 
 ## Verify inference and run one safe case
 
@@ -68,7 +80,7 @@ Use the endpoint path ending in `/chat/completions`. The key is selected server-
 ```
 4. Poll `GET /scans/{scan_id}` and then inspect `GET /scans/{scan_id}/results`.
 
-Do not start with a large scan. The direct `/targets/{target_id}/fuzz?count=1` route may expand one seed into multiple mutations; the scan lifecycle endpoint with mutation depth and mutation count set to zero is the controlled single-case starting point.
+Do not start with a large scan. For scans, `count` is the number of base fuzz cases; mutations are additional cases, so generated and executed totals can exceed `count`. The direct `/targets/{target_id}/fuzz?count=1` route may expand one seed into multiple mutations. Set both `max_mutation_depth` and `max_mutations_per_case` to zero to run exactly the requested base cases without mutations.
 
 ## Results and errors
 
