@@ -6,7 +6,7 @@ Member 3 work covers response analysis, provider execution security, and scan re
 
 PR: https://github.com/SuhasKoparde/AI-fuzzer/pull/18
 
-The merge-resolution commit hash will be recorded here after it is created. PR #18 is open and has not been merged.
+Merge-resolution commit: `9d341b3`. PR #18 is open and has not been merged.
 
 ## Analysis pipeline
 
@@ -50,5 +50,5 @@ Provider model access, credentials, live response parsing, and real-provider lat
 
 - Local branch: `resolve/member3-pr18`
 - PR head branch: `feat/member3-gemini-canary`
-- Merge-resolution commit: pending
+- Merge-resolution commit: `9d341b3`
 - PR state at review: open, not merged; no GitHub check runs were reported for the current PR head.
