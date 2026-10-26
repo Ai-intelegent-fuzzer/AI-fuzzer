@@ -11,6 +11,9 @@ env/
 
 # Environment files
 .env
+/backend/.env
+/backend/.env.*.local
+.env.*.local
 
 # IDE
 .vscode/

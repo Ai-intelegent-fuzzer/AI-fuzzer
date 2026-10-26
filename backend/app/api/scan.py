@@ -57,11 +57,13 @@ def start_scan(request: ScanCreateRequest) -> ScanRecord:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Scan queue is full. Retry after an existing scan finishes.",
+            headers={"Retry-After": "2"},
         ) from None
     except ScanSchedulerShuttingDownError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Scan scheduler is shutting down. Retry later.",
+            headers={"Retry-After": "2"},
         ) from None
 
 

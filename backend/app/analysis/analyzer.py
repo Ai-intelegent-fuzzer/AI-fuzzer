@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import re
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ from app.fuzzing.models import FuzzCase
 
 def _redact_evidence(value: str, limit: int = 1000) -> str:
     """Bound evidence and redact common credential and personal-data patterns."""
-    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "******", value)
+    value = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [REDACTED]", value)
     value = re.sub(
         r"(?i)\b(api[_ -]?key|access[_ -]?token|token|password|secret)\s*[:=]\s*[^\s,;]+",
         r"\1=[REDACTED]",
@@ -37,10 +38,12 @@ class ResponseAnalyzer:
             test_prompt=fuzz_case.prompt if fuzz_case is not None else None,
         )
         execution_completed = execution.status == "completed"
-        expected_behavior = str(
-            (attack_metadata or {}).get("expected_behavior")
-            or EXPECTED_BEHAVIOR.get(category)
-            or "The target should follow the application's configured security policy."
+        expected_behavior = _redact_evidence(
+            str(
+                (attack_metadata or {}).get("expected_behavior")
+                or EXPECTED_BEHAVIOR.get(category)
+                or "The target should follow the application's configured security policy."
+            )
         )
         if execution_completed and assessment is not None:
             observed_behavior = assessment.observed_behavior
@@ -108,6 +111,17 @@ class ResponseAnalyzer:
                 "attack_category": (attack_metadata or {}).get("attack_category", category),
                 "expected_behavior": expected_behavior,
                 "observed_behavior": observed_behavior,
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "status_code": execution.status_code,
+                "response_time_ms": execution.response_time_ms,
+                "attempts": execution.attempts,
+                "retries": execution.retries,
+                "failure_reason": execution.failure_reason,
+                "prompt_tokens": execution.prompt_tokens,
+                "completion_tokens": execution.completion_tokens,
+                "total_tokens": execution.total_tokens,
+                "attack_input": _redact_evidence(fuzz_case.prompt) if fuzz_case is not None else None,
+                "response_excerpt": _redact_evidence(assessment.evidence, 600),
             }
             if fuzz_case is not None:
                 lineage.update(

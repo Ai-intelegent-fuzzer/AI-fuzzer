@@ -33,14 +33,15 @@ class ScanScheduler:
         self,
         max_workers: int = 2,
         *,
-        max_pending_scans: int = 10,
-        max_retained_scans: int = 25,
+        max_pending_scans: int = 8,
+        max_retained_scans: int = 100,
     ) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._max_workers = max(1, max_workers)
+        self._max_pending_scans = max(0, max_pending_scans)
+        self._max_retained_scans = max(1, max_retained_scans)
+        self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
         self._lock = Lock()
         self._shutdown = False
-        self._max_pending_scans = max(1, max_pending_scans)
-        self._max_retained_scans = max(self._max_pending_scans, max_retained_scans)
         self._scans: dict[str, ScanRecord] = {}
         self._requests: dict[str, ScanCreateRequest] = {}
         self._results: dict[str, list[dict[str, object]]] = {}
@@ -80,15 +81,15 @@ class ScanScheduler:
         with self._lock:
             if self._shutdown:
                 raise ScanSchedulerShuttingDownError("Scan scheduler is shutting down.")
-            active_count = sum(
-                item.status in {ScanStatus.QUEUED, ScanStatus.RUNNING}
+            self._prune_retained_locked()
+            active = sum(
+                item.status not in self.TERMINAL_STATUSES
                 for item in self._scans.values()
             )
-            if active_count >= self._max_pending_scans:
-                raise ScanQueueFullError("Scan queue is full; retry after a scan finishes.")
-            self._prune_retained_locked()
+            if active >= self._max_workers + self._max_pending_scans:
+                raise ScanQueueFullError("Scan queue is full; retry after an active scan finishes.")
             if len(self._scans) >= self._max_retained_scans:
-                raise ScanQueueFullError("Scan retention capacity is full.")
+                raise ScanQueueFullError("Scan retention capacity is full; retry shortly.")
             self._scans[scan_id] = scan
             self._requests[scan_id] = request.model_copy(deep=True)
             self._results[scan_id] = []
@@ -132,6 +133,9 @@ class ScanScheduler:
             if future.cancel():
                 scan.status = ScanStatus.CANCELLED
                 scan.completed_at = datetime.now(timezone.utc)
+                self._requests.pop(scan_id, None)
+                self._cancel_events.pop(scan_id, None)
+                self._futures.pop(scan_id, None)
             return scan.model_copy(deep=True)
 
     def _run(self, scan_id: str) -> None:
@@ -195,6 +199,12 @@ class ScanScheduler:
                     scan.failure_reason = "Scan failed due to an internal error."
                     scan.error_count += 1
                 scan.completed_at = datetime.now(timezone.utc)
+        finally:
+            with self._lock:
+                # Keep the completed Future with its retained ScanRecord so callers
+                # can safely observe completion; retention pruning bounds this map.
+                self._requests.pop(scan_id, None)
+                self._cancel_events.pop(scan_id, None)
 
     def _calculate_metrics(
         self,

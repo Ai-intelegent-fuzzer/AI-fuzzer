@@ -270,7 +270,7 @@ class RealProviderExecutorTests(unittest.TestCase):
                 self.closed = False
 
             def __iter__(self):
-                for _ in range(100):
+                for _ in range(300):
                     self.chunks_read += 1
                     yield b"x" * 8192
 
@@ -298,7 +298,7 @@ class RealProviderExecutorTests(unittest.TestCase):
 
         self.assertEqual(result.status, "invalid_response")
         self.assertEqual(result.failure_reason, "provider_response_too_large")
-        self.assertLess(stream.chunks_read, 100)
+        self.assertLess(stream.chunks_read, 300)
         self.assertTrue(stream.closed)
 
     @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})

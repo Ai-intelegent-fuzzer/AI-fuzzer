@@ -2,12 +2,16 @@ import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
 
 from app.adapters.models import AIProvider, Target, TargetType
+from app.adapters.provider_security import (
+    MAX_PROVIDER_RESPONSE_BYTES as _MAX_PROVIDER_RESPONSE_BYTES,
+    bounded_post,
+    validate_provider_endpoint,
+)
 from app.fuzzing.models import FuzzCase
 from .models import ExecutionResult
 
@@ -16,39 +20,10 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 def _is_trusted_provider_endpoint(target: Target) -> bool:
     try:
-        endpoint = urlsplit(str(target.endpoint))
-        port = endpoint.port
+        validate_provider_endpoint(target.provider.value, str(target.endpoint))
     except ValueError:
         return False
-
-    if (
-        endpoint.scheme.lower() != "https"
-        or endpoint.username is not None
-        or endpoint.password is not None
-        or endpoint.query
-        or endpoint.fragment
-        or port not in (None, 443)
-    ):
-        return False
-
-    path = endpoint.path.rstrip("/")
-    if target.provider == AIProvider.OPENAI:
-        return endpoint.hostname == "api.openai.com" and path == "/v1/chat/completions"
-    if target.provider == AIProvider.GROQ:
-        return (
-            endpoint.hostname == "api.groq.com"
-            and path == "/openai/v1/chat/completions"
-        )
-    if target.provider == AIProvider.GEMINI:
-        return endpoint.hostname == "generativelanguage.googleapis.com" and (
-            path in {"/v1", "/v1beta"}
-            or (
-                path.startswith(("/v1/models/", "/v1beta/models/"))
-                and path.count("/") == 3
-                and bool(path.rsplit("/", 1)[-1])
-            )
-        )
-    return False
+    return True
 
 
 def _post_provider_request(
@@ -59,42 +34,17 @@ def _post_provider_request(
     timeout: float,
     max_response_bytes: int,
 ) -> httpx.Response:
-    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        with client.stream(
-            "POST",
-            url,
-            headers=headers,
-            json=payload,
-        ) as streamed:
-            content = bytearray()
-            too_large = False
-            if 200 <= streamed.status_code < 300:
-                for chunk in streamed.iter_bytes(chunk_size=8192):
-                    remaining = max_response_bytes + 1 - len(content)
-                    content.extend(chunk[:remaining])
-                    if len(content) > max_response_bytes:
-                        too_large = True
-                        break
-
-            # iter_bytes() yields decoded content. Remove headers that
-            # describe the original wire representation before rebuilding it.
-            response_headers = {
-                key: value
-                for key, value in streamed.headers.items()
-                if key.lower() not in {
-                    "content-encoding",
-                    "content-length",
-                    "transfer-encoding",
-                }
-            }
-            response = httpx.Response(
-                status_code=streamed.status_code,
-                headers=response_headers,
-                content=bytes(content[:max_response_bytes]),
-                request=streamed.request,
-            )
-            response.extensions["provider_response_too_large"] = too_large
-            return response
+    response = bounded_post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+        max_bytes=max_response_bytes,
+    )
+    response.extensions["provider_response_too_large"] = response.extensions.get(
+        "ai_fuzzer_response_too_large", False
+    )
+    return response
 
 
 def _token_count(value: object) -> int | None:
@@ -107,7 +57,7 @@ class FuzzExecutor:
     MAX_TIMEOUT_SECONDS = 120.0
     MAX_RETRIES = 5
     MAX_RESPONSE_SIZE = 10000
-    MAX_PROVIDER_RESPONSE_BYTES = 256_000
+    MAX_PROVIDER_RESPONSE_BYTES = _MAX_PROVIDER_RESPONSE_BYTES
 
     def execute(
         self,
@@ -164,6 +114,7 @@ class FuzzExecutor:
                         "POST",
                         str(target.endpoint),
                         json={"prompt": prompt},
+                        follow_redirects=False,
                     ) as streamed:
                         if streamed.status_code >= 500 and attempts <= retry_limit:
                             continue
@@ -354,6 +305,23 @@ class FuzzExecutor:
                     timeout=timeout,
                     max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
+                if response.extensions.get("ai_fuzzer_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured safety limit.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                        response_truncated=True,
+                    )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
 
                 if response.status_code >= 500 and attempt < retries:
                     continue
@@ -624,6 +592,23 @@ class FuzzExecutor:
                     max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 last_status_code = response.status_code
+                if response.extensions.get("ai_fuzzer_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured safety limit.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                        response_truncated=True,
+                    )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
                 if response.status_code >= 500 and attempt < retries:
                     continue
                 if response.status_code == 429:

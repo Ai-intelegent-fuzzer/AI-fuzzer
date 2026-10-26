@@ -31,11 +31,16 @@ class ScanResourceManagementTests(unittest.TestCase):
             with patch("app.fuzzing.scheduler.fuzz_orchestrator.run", side_effect=blocked_run):
                 first = scheduler.start(ScanCreateRequest(target_id="target-1", count=1))
                 self.assertTrue(started.wait(timeout=2))
+                second = scheduler.start(
+                    ScanCreateRequest(target_id="target-2", count=1)
+                )
                 with self.assertRaises(ScanQueueFullError):
-                    scheduler.start(ScanCreateRequest(target_id="target-2", count=1))
+                    scheduler.start(ScanCreateRequest(target_id="target-3", count=1))
                 release.set()
                 scheduler._futures[first.scan_id].result(timeout=3)
+                scheduler._futures[second.scan_id].result(timeout=3)
                 self.assertEqual(scheduler.get(first.scan_id).status, ScanStatus.COMPLETED)
+                self.assertEqual(scheduler.get(second.scan_id).status, ScanStatus.COMPLETED)
         finally:
             release.set()
             scheduler._executor.shutdown(wait=True)
