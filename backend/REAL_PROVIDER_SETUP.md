@@ -6,11 +6,21 @@ AI-Fuzzer can send generated test prompts to an authorized model using the OpenA
 
 1. From the repository root, copy `backend/.env.example` to `backend/.env`.
 2. Add your own provider key to `GROQ_API_KEY` or `OPENAI_API_KEY`. Do not paste keys into source code, issue reports, scan prompts, or chat.
-3. Start the backend from `backend/` so Python can load dependencies. The executor also loads the local `.env` by file path.
+3. Start the backend from `backend/` with `python -m uvicorn app.main:app --host 127.0.0.1 --port 8001`. The application loads `backend/.env` by an absolute path during startup; restart the backend after changing provider credentials or defaults.
 4. For Groq, create an authorized key in the official console: https://console.groq.com/ . Set `GROQ_MODEL` to a model currently available to your account.
 5. For OpenAI, use an authorized API key and a model available to that project. Set `OPENAI_MODEL` accordingly.
 
 Keys and model access are controlled by the provider account. The default model strings are examples, not a guarantee of account access.
+
+Targets, scans, and scan results are held in process memory. They are lost when the backend restarts, and a target must be created again before it can be used.
+
+## Endpoint safety
+
+By default, target endpoints must use HTTPS and resolve only to public IP addresses. OpenAI-compatible provider targets are restricted to the provider's official API hostname. For an explicitly trusted compatible provider, set `AI_FUZZER_ALLOWED_PROVIDER_HOSTS` to a comma-separated list of hostnames; do not include URL schemes or paths.
+
+`AI_FUZZER_ALLOW_PRIVATE_TARGETS=true` disables these endpoint restrictions for controlled local development and tests. Do not enable it on a network-exposed server or when provider credentials are configured: it permits private/local endpoints and bypasses the provider-host restriction.
+
+The backend checks DNS results before requests and disables HTTP redirects, but does not pin the checked IP to the subsequent connection. DNS rebinding is therefore not fully prevented. Use network egress controls or a filtering proxy for production deployments.
 
 ## Create a target
 

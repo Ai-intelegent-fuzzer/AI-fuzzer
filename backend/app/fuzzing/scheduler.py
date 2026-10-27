@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from threading import Event, Lock
@@ -97,6 +98,7 @@ class ScanScheduler:
                 execution_order=request.execution_order,
                 multi_turn=request.multi_turn,
                 turns_per_conversation=request.turns_per_conversation,
+                scan_id=scan_id,
                 cancel_event=cancel_event,
                 on_cases_generated=record_generated_cases,
             )
@@ -117,10 +119,20 @@ class ScanScheduler:
                 )
                 scan.completed_at = datetime.now(timezone.utc)
         except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Scan failed for scan_id=%s; exception_type=%s",
+                scan_id,
+                type(exc).__name__,
+            )
             with self._lock:
                 scan = self._scans[scan_id]
                 scan.status = ScanStatus.FAILED
-                scan.failure_reason = str(exc)
+                scan.failure_reason = (
+                    "Target no longer exists."
+                    if isinstance(exc, ValueError)
+                    and str(exc) == "Target no longer exists"
+                    else "Scan failed due to an internal execution error."
+                )
                 scan.error_count += 1
                 scan.completed_at = datetime.now(timezone.utc)
 

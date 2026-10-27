@@ -1,4 +1,4 @@
-from app.adapters.base import AIAdapter
+from app.adapters.base import AIAdapter, AdapterError
 from app.execution.executor import fuzz_executor
 from app.fuzzing.models import FuzzCase
 
@@ -19,9 +19,17 @@ class GeminiAdapter(AIAdapter):
         )
 
         if result.status != "completed":
-            raise RuntimeError(result.message)
+            raise AdapterError(result)
 
         if result.response_body is None:
-            raise RuntimeError("Gemini returned no response body.")
+            raise AdapterError(
+                result.model_copy(
+                    update={
+                        "status": "invalid_response",
+                        "message": "Gemini returned no usable response content.",
+                        "failure_reason": "provider_response_empty",
+                    }
+                )
+            )
 
         return result.response_body

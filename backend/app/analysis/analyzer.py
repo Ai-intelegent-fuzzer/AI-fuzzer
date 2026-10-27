@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
@@ -58,6 +58,7 @@ class ResponseAnalyzer:
             lineage = {
                 "case_id": execution.case_id,
                 "target_id": execution.target_id,
+                "scan_id": execution.scan_id,
                 "provider": execution.provider,
                 "model": execution.model,
                 "execution_status": execution.status,
@@ -111,9 +112,27 @@ class ResponseAnalyzer:
             ]
             findings.append(
                 Finding(
-                    finding_id=str(uuid4()),
+                    finding_id=str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            ":".join(
+                                (
+                                    "ai-fuzzer-finding",
+                                    execution.target_id,
+                                    execution.scan_id or "direct",
+                                    execution.case_id,
+                                    category,
+                                    ",".join(
+                                        indicator.indicator_type.value
+                                        for indicator in indicators
+                                    ),
+                                )
+                            ),
+                        )
+                    ),
                     case_id=execution.case_id,
                     target_id=execution.target_id,
+                    scan_id=execution.scan_id,
                     category=category,
                     title=(
                         f"{finding_type}"
@@ -121,6 +140,12 @@ class ResponseAnalyzer:
                         f": {attack_name or category.replace('_', ' ')}"
                         if primary_verification_level == "response_claim_only"
                         else f"{finding_type}: {attack_name or category.replace('_', ' ')}"
+                    ),
+                    description=observed_behavior,
+                    detection_rationale=(
+                        f"Matched {len(indicators)} category-scoped behavioral "
+                        "indicator(s) in the target response. This is heuristic "
+                        "response evidence, not proof of external impact."
                     ),
                     severity=assessment.severity,
                     confidence=assessment.confidence,
@@ -142,6 +167,7 @@ class ResponseAnalyzer:
         return AnalysisResult(
             target_id=execution.target_id,
             case_id=execution.case_id,
+            scan_id=execution.scan_id,
             category=category,
             vulnerable=vulnerable,
             status=status,

@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from collections.abc import Sequence
@@ -6,6 +7,10 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
+from app.adapters.endpoint_policy import (
+    UnsafeTargetEndpointError,
+    validate_target_endpoint,
+)
 from app.adapters.models import AIProvider, Target, TargetType
 from app.fuzzing.models import FuzzCase
 from .models import ExecutionResult
@@ -28,6 +33,27 @@ class FuzzExecutor:
         response_size_limit: int = MAX_RESPONSE_SIZE,
         conversation_context: Sequence[str] | None = None,
     ) -> ExecutionResult:
+        provider = (
+            target.provider.value
+            if target.target_type == TargetType.OPENAI_COMPATIBLE
+            else None
+        )
+        try:
+            validate_target_endpoint(
+                str(target.endpoint),
+                provider=provider,
+            )
+        except UnsafeTargetEndpointError:
+            return ExecutionResult(
+                target_id=target.target_id,
+                case_id=fuzz_case.case_id,
+                status="configuration_error",
+                message="Target endpoint is not allowed by the server's endpoint policy.",
+                failure_reason="target_endpoint_blocked",
+                provider=provider,
+                model=target.model,
+            )
+
         if target.target_type == TargetType.OPENAI_COMPATIBLE:
             if target.provider == AIProvider.GEMINI:
                 return self._execute_gemini(
@@ -73,6 +99,7 @@ class FuzzExecutor:
                         "POST",
                         str(target.endpoint),
                         json={"prompt": prompt},
+                        follow_redirects=False,
                     ) as streamed:
                         if streamed.status_code >= 500 and attempts <= retry_limit:
                             continue
@@ -100,18 +127,25 @@ class FuzzExecutor:
                 else:
                     final_status = "completed"
                 break
-            except httpx.TimeoutException as exc:
-                failure_reason = str(exc) or "Target request timed out."
+            except httpx.TimeoutException:
+                failure_reason = "Target request timed out."
                 final_status = "timeout"
-            except httpx.NetworkError as exc:
-                failure_reason = str(exc) or "Target network request failed."
+            except httpx.NetworkError:
+                failure_reason = "Target network request failed."
                 final_status = "error"
-            except httpx.HTTPError as exc:
-                failure_reason = str(exc)
+            except httpx.HTTPError:
+                failure_reason = "Target HTTP transport failed."
                 final_status = "error"
                 break
             except Exception as exc:
-                failure_reason = str(exc)
+                logging.getLogger(__name__).error(
+                    "Target execution failed for target_id=%s case_id=%s; "
+                    "exception_type=%s",
+                    target.target_id,
+                    fuzz_case.case_id,
+                    type(exc).__name__,
+                )
+                failure_reason = "Target request failed due to an internal execution error."
                 final_status = "error"
                 break
 
@@ -255,6 +289,7 @@ class FuzzExecutor:
                     },
                     json=payload,
                     timeout=timeout,
+                    follow_redirects=False,
                 )
 
                 if response.status_code >= 500 and attempt < retries:
@@ -489,6 +524,7 @@ class FuzzExecutor:
                     },
                     json=payload,
                     timeout=timeout,
+                    follow_redirects=False,
                 )
                 last_status_code = response.status_code
                 if response.status_code >= 500 and attempt < retries:

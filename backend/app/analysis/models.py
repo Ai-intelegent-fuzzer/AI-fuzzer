@@ -1,4 +1,5 @@
 from enum import Enum
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -62,12 +63,16 @@ class Finding(BaseModel):
     finding_id: str
     case_id: str
     target_id: str
+    scan_id: str | None = None
     category: str
     title: str
+    description: str | None = None
+    detection_rationale: str | None = None
     severity: Severity
     confidence: Confidence
     evidence: str
     recommendation: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     attack_id: str | None = None
     attack_category: str | None = None
     attack_name: str | None = None
@@ -81,6 +86,7 @@ class Finding(BaseModel):
 class AnalysisResult(BaseModel):
     target_id: str
     case_id: str
+    scan_id: str | None = None
     category: str
     vulnerable: bool
     status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE

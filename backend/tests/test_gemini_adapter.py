@@ -4,6 +4,7 @@ from unittest.mock import patch
 from app.adapters.factory import get_adapter
 from app.adapters.gemini_adapter import GeminiAdapter
 from app.adapters.models import AIProvider, Target, TargetType
+from app.adapters.openai_compatible import OpenAICompatibleAdapter
 from app.execution.models import ExecutionResult
 
 
@@ -40,6 +41,17 @@ class GeminiAdapterTests(unittest.TestCase):
         self.assertEqual(args[0], self.target)
         self.assertEqual(args[1].prompt, "Say hello")
         self.assertEqual(kwargs["max_retries"], 0)
+
+    def test_factory_uses_openai_compatible_adapter_for_groq(self) -> None:
+        target = self.target.model_copy(
+            update={
+                "provider": AIProvider.GROQ,
+                "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+                "model": "openai/gpt-oss-20b",
+            }
+        )
+
+        self.assertIsInstance(get_adapter(target), OpenAICompatibleAdapter)
 
     @patch("app.adapters.gemini_adapter.fuzz_executor.execute")
     def test_failed_execution_raises_safe_error(self, execute):

@@ -283,6 +283,29 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result.response_body, "0123")
         self.assertTrue(result.response_truncated)
 
+    def test_network_error_does_not_expose_exception_details(self) -> None:
+        real_client = httpx.Client
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(
+                "synthetic secret and prompt content",
+                request=request,
+            )
+
+        with patch(
+            "app.execution.executor.httpx.Client",
+            side_effect=lambda **kwargs: real_client(
+                transport=httpx.MockTransport(handler),
+                **kwargs,
+            ),
+        ):
+            result = FuzzExecutor().execute(self.target, self.case)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.failure_reason, "Target network request failed.")
+        self.assertNotIn("synthetic secret", result.message)
+        self.assertNotIn("prompt content", result.message)
+
     def test_timeout_is_retried_and_success_clears_failure_reason(self) -> None:
         real_client = httpx.Client
         attempts = 0
@@ -444,6 +467,27 @@ class ScanTests(unittest.TestCase):
             completed.metrics.category_statistics["prompt_injection"]["executed"],
             1,
         )
+
+    def test_scheduler_does_not_expose_exception_text_in_failure_reason(self) -> None:
+        scheduler = ScanScheduler(max_workers=1)
+        with patch(
+            "app.fuzzing.scheduler.fuzz_orchestrator.run",
+            side_effect=RuntimeError("synthetic secret and prompt content"),
+        ):
+            with self.assertLogs("app.fuzzing.scheduler", level="ERROR") as captured:
+                queued = scheduler.start(
+                    ScanCreateRequest(target_id="synthetic", count=1)
+                )
+                scheduler._futures[queued.scan_id].result(timeout=5)
+
+        failed = scheduler.get(queued.scan_id)
+        self.assertEqual(failed.status, ScanStatus.FAILED)
+        self.assertEqual(
+            failed.failure_reason,
+            "Scan failed due to an internal execution error.",
+        )
+        self.assertNotIn("synthetic secret", failed.failure_reason)
+        self.assertNotIn("prompt content", "\n".join(captured.output))
 
     def test_metrics_match_generated_cases_executions_and_findings(self) -> None:
         cases = [

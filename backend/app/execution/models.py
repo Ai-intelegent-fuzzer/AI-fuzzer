@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class ExecutionResult(BaseModel):
     target_id: str
     case_id: str
+    scan_id: str | None = None
     status: str
     status_code: int | None = None
     response_time_ms: float | None = None

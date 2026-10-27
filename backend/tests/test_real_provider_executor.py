@@ -10,6 +10,12 @@ from app.fuzzing.models import FuzzCase
 
 class RealProviderExecutorTests(unittest.TestCase):
     def setUp(self) -> None:
+        dns_patcher = patch(
+            "app.adapters.endpoint_policy.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("8.8.8.8", 443))],
+        )
+        dns_patcher.start()
+        self.addCleanup(dns_patcher.stop)
         self.target = Target(
             target_id="live-target",
             name="Groq test target",
@@ -65,6 +71,22 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.model, "test-model")
         self.assertEqual(result.total_tokens, 9)
         self.assertNotIn("test-secret", result.model or "")
+        self.assertFalse(kwargs["follow_redirects"])
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"}, clear=True)
+    @patch(
+        "app.adapters.endpoint_policy.socket.getaddrinfo",
+        return_value=[(2, 1, 6, "", ("10.0.0.8", 443))],
+    )
+    @patch("app.execution.executor.httpx.post")
+    def test_private_dns_destination_is_blocked_before_provider_request(
+        self, post, _getaddrinfo
+    ) -> None:
+        result = FuzzExecutor().execute(self.target, self.case)
+
+        self.assertEqual(result.status, "configuration_error")
+        self.assertEqual(result.failure_reason, "target_endpoint_blocked")
+        post.assert_not_called()
 
     @patch.dict("os.environ", {}, clear=True)
     def test_missing_key_returns_safe_configuration_error(self) -> None:
@@ -78,6 +100,24 @@ class RealProviderExecutorTests(unittest.TestCase):
         result = FuzzExecutor().execute(target, self.case)
         self.assertEqual(result.status, "configuration_error")
         self.assertEqual(result.failure_reason, "provider_model_missing")
+
+    @patch.dict(
+        "os.environ",
+        {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": "default-test-model"},
+    )
+    @patch("app.execution.executor.httpx.post")
+    def test_provider_model_uses_configured_default(self, post) -> None:
+        target = self.target.model_copy(update={"model": None})
+        post.return_value = httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "hello"}}]},
+        )
+
+        result = FuzzExecutor().execute(target, self.case)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.model, "default-test-model")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "default-test-model")
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
     @patch("app.execution.executor.httpx.post")

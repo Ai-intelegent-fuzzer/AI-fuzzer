@@ -20,57 +20,71 @@ class AdapterTests(unittest.TestCase):
         )
         self.adapter = OpenAICompatibleAdapter(self.target)
 
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
     def test_send_prompt_parses_successful_response(self) -> None:
-        response = httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"content": "synthetic response"}}
-                ]
-            },
-            request=httpx.Request("POST", str(self.target.endpoint)),
-        )
+        from app.execution.models import ExecutionResult
 
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="completed",
+            response_body="synthetic response",
+            message="Real provider inference completed.",
+        )
         with patch(
-            "app.adapters.openai_compatible.httpx.post",
-            return_value=response,
-        ) as post:
+            "app.adapters.openai_compatible.fuzz_executor.execute",
+            return_value=execution,
+        ) as execute:
             result = self.adapter.send_prompt("synthetic prompt")
 
         self.assertEqual(result, "synthetic response")
-        self.assertEqual(post.call_args.kwargs["json"]["model"], "synthetic-model")
+        execute.assert_called_once()
+        self.assertEqual(execute.call_args.args[0], self.target)
+        self.assertEqual(execute.call_args.args[1].prompt, "synthetic prompt")
+        self.assertEqual(execute.call_args.kwargs["timeout_seconds"], 30.0)
+
+    def test_send_prompt_raises_sanitized_error_for_failed_execution(self) -> None:
+        from app.adapters.base import AdapterError
+        from app.execution.models import ExecutionResult
+
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="authentication_error",
+            message="Provider rejected the API credentials or access.",
+            failure_reason="provider_authentication_failed",
+        )
+        with patch(
+            "app.adapters.openai_compatible.fuzz_executor.execute",
+            return_value=execution,
+        ):
+            with self.assertRaises(AdapterError) as caught:
+                self.adapter.send_prompt("synthetic prompt")
+
+        self.assertEqual(caught.exception.result.status, "authentication_error")
+        self.assertNotIn("synthetic prompt", str(caught.exception))
+
+    def test_send_prompt_rejects_empty_response(self) -> None:
+        from app.adapters.base import AdapterError
+        from app.execution.models import ExecutionResult
+
+        execution = ExecutionResult(
+            target_id=self.target.target_id,
+            case_id="adapter-prompt",
+            status="completed",
+            response_body=None,
+            message="Real provider inference completed.",
+        )
+        with patch(
+            "app.adapters.openai_compatible.fuzz_executor.execute",
+            return_value=execution,
+        ):
+            with self.assertRaises(AdapterError) as caught:
+                self.adapter.send_prompt("synthetic prompt")
+
         self.assertEqual(
-            post.call_args.kwargs["json"]["messages"],
-            [{"role": "user", "content": "synthetic prompt"}],
+            caught.exception.result.failure_reason,
+            "provider_response_empty",
         )
-
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
-    def test_send_prompt_propagates_http_status_error(self) -> None:
-        response = httpx.Response(
-            503,
-            request=httpx.Request("POST", str(self.target.endpoint)),
-        )
-
-        with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
-            self.assertRaises(httpx.HTTPStatusError),
-        ):
-            self.adapter.send_prompt("synthetic prompt")
-
-    @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
-    def test_send_prompt_rejects_malformed_response(self) -> None:
-        response = httpx.Response(
-            200,
-            json={"choices": []},
-            request=httpx.Request("POST", str(self.target.endpoint)),
-        )
-
-        with (
-            patch("app.adapters.openai_compatible.httpx.post", return_value=response),
-            self.assertRaises(IndexError),
-        ):
-            self.adapter.send_prompt("synthetic prompt")
 
 
 class ConnectivityTests(unittest.TestCase):
@@ -123,6 +137,17 @@ class ConnectivityTests(unittest.TestCase):
 
         self.assertEqual(result.status, ConnectivityStatus.ERROR)
         self.assertIn("connect", result.message.lower())
+
+    def test_unexpected_error_is_logged_without_exception_text(self) -> None:
+        with patch(
+            "app.connectivity.tester.httpx.Client",
+            side_effect=RuntimeError("synthetic secret diagnostic"),
+        ):
+            with self.assertLogs("app.connectivity.tester", level="ERROR") as captured:
+                result = self.tester.test(self.target)
+
+        self.assertEqual(result.status, ConnectivityStatus.ERROR)
+        self.assertNotIn("synthetic secret", "\n".join(captured.output))
 
 
 class GeminiConnectivityTests(unittest.TestCase):

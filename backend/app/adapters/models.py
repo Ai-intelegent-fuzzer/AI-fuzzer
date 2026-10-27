@@ -1,7 +1,9 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
+
+from app.adapters.endpoint_policy import validate_target_endpoint
 
 
 class TargetType(str, Enum):
@@ -24,6 +26,20 @@ class TargetCreate(BaseModel):
     model: Optional[str] = None
     provider: AIProvider = AIProvider.OPENAI
     description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_endpoint_policy(self) -> "TargetCreate":
+        provider = (
+            self.provider.value
+            if self.target_type == TargetType.OPENAI_COMPATIBLE
+            else None
+        )
+        validate_target_endpoint(
+            str(self.endpoint),
+            provider=provider,
+            resolve_dns=False,
+        )
+        return self
 
 
 class Target(TargetCreate):
