@@ -1,7 +1,12 @@
+import logging
 import time
 
 import httpx
 
+from app.adapters.endpoint_policy import (
+    UnsafeTargetEndpointError,
+    validate_target_endpoint,
+)
 from app.adapters.models import Target, TargetType
 from app.fuzzing.models import FuzzCase
 from app.execution.executor import fuzz_executor
@@ -21,7 +26,7 @@ class ConnectivityTester:
                     prompt="Reply with exactly: AI-Fuzzer connectivity OK",
                     category="connectivity_check",
                 ),
-                timeout_seconds=10.0,
+                timeout_seconds=30.0,
                 max_retries=0,
             )
             status = (
@@ -44,8 +49,20 @@ class ConnectivityTester:
             )
 
         try:
+            validate_target_endpoint(str(target.endpoint))
+        except UnsafeTargetEndpointError:
+            return ConnectivityResult(
+                target_id=target.target_id,
+                status=ConnectivityStatus.ERROR,
+                message="Target endpoint is not allowed by the server's endpoint policy.",
+            )
+
+        try:
             with httpx.Client(timeout=10.0) as client:
-                response = client.get(str(target.endpoint))
+                response = client.get(
+                    str(target.endpoint),
+                    follow_redirects=False,
+                )
 
             elapsed = (time.perf_counter() - start) * 1000
 
@@ -71,7 +88,12 @@ class ConnectivityTester:
                 message="Could not connect to the target endpoint.",
             )
 
-        except Exception:
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Unexpected connectivity error for target_id=%s; exception_type=%s",
+                target.target_id,
+                type(exc).__name__,
+            )
             return ConnectivityResult(
                 target_id=target.target_id,
                 status=ConnectivityStatus.ERROR,

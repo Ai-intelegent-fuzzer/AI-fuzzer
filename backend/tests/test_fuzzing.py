@@ -8,7 +8,7 @@ from unittest.mock import patch
 import httpx
 
 from app.adapters.models import Target
-from app.analysis.models import AnalysisResult, Confidence, Finding, Severity
+from app.analysis.models import AnalysisResult, AnalysisStatus, BehavioralIndicator, Confidence, Finding, IndicatorType, Severity
 from app.execution.executor import FuzzExecutor
 from app.execution.models import ExecutionResult
 from app.fuzzing.engine import FUZZ_TEMPLATES, fuzz_engine
@@ -283,6 +283,29 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(result.response_body, "0123")
         self.assertTrue(result.response_truncated)
 
+    def test_network_error_does_not_expose_exception_details(self) -> None:
+        real_client = httpx.Client
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(
+                "synthetic secret and prompt content",
+                request=request,
+            )
+
+        with patch(
+            "app.execution.executor.httpx.Client",
+            side_effect=lambda **kwargs: real_client(
+                transport=httpx.MockTransport(handler),
+                **kwargs,
+            ),
+        ):
+            result = FuzzExecutor().execute(self.target, self.case)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.failure_reason, "Target network request failed.")
+        self.assertNotIn("synthetic secret", result.message)
+        self.assertNotIn("prompt content", result.message)
+
     def test_timeout_is_retried_and_success_clears_failure_reason(self) -> None:
         real_client = httpx.Client
         attempts = 0
@@ -444,6 +467,27 @@ class ScanTests(unittest.TestCase):
             completed.metrics.category_statistics["prompt_injection"]["executed"],
             1,
         )
+
+    def test_scheduler_does_not_expose_exception_text_in_failure_reason(self) -> None:
+        scheduler = ScanScheduler(max_workers=1)
+        with patch(
+            "app.fuzzing.scheduler.fuzz_orchestrator.run",
+            side_effect=RuntimeError("synthetic secret and prompt content"),
+        ):
+            with self.assertLogs("app.fuzzing.scheduler", level="ERROR") as captured:
+                queued = scheduler.start(
+                    ScanCreateRequest(target_id="synthetic", count=1)
+                )
+                scheduler._futures[queued.scan_id].result(timeout=5)
+
+        failed = scheduler.get(queued.scan_id)
+        self.assertEqual(failed.status, ScanStatus.FAILED)
+        self.assertEqual(
+            failed.failure_reason,
+            "Scan failed due to an internal execution error.",
+        )
+        self.assertNotIn("synthetic secret", failed.failure_reason)
+        self.assertNotIn("prompt content", "\n".join(captured.output))
 
     def test_metrics_match_generated_cases_executions_and_findings(self) -> None:
         cases = [
@@ -651,12 +695,88 @@ class ApiCompatibilityTests(unittest.TestCase):
                         message="ok",
                     )
 
-                with patch("app.fuzzing.orchestrator.fuzz_executor.execute", side_effect=execute):
+                def analyze(
+                    execution: ExecutionResult,
+                    category: str,
+                    *,
+                    fuzz_case: FuzzCase | None = None,
+                ) -> AnalysisResult:
+                    indicator = BehavioralIndicator(
+                        indicator_type=IndicatorType.UNAUTHORIZED_ACTION,
+                        description="The response claims an unauthorized action occurred.",
+                        evidence="Synthetic response claim",
+                        confidence=Confidence.HIGH,
+                        category=category,
+                        metadata={
+                            "verification_level": "response_claim_only",
+                            "external_impact_verified": False,
+                        },
+                    )
+                    finding = Finding(
+                        finding_id="direct-fuzz-finding",
+                        case_id=execution.case_id,
+                        target_id=execution.target_id,
+                        category=category,
+                        title="Unauthorized Action [response claim only; external impact unverified]",
+                        severity=Severity.HIGH,
+                        confidence=Confidence.HIGH,
+                        evidence="Synthetic response claim",
+                        recommendation="Verify effects independently before asserting external impact.",
+                        metadata={
+                            "evidence_assurance": "response_claim_only",
+                            "external_impact_verified": False,
+                            "indicators": [indicator.model_dump(mode="json")],
+                        },
+                    )
+                    return AnalysisResult(
+                        target_id=execution.target_id,
+                        case_id=execution.case_id,
+                        category=category,
+                        vulnerable=True,
+                        status=AnalysisStatus.FAIL,
+                        findings=[finding],
+                        indicators=[indicator],
+                    )
+
+                with (
+                    patch(
+                        "app.fuzzing.orchestrator.fuzz_executor.execute",
+                        side_effect=execute,
+                    ),
+                    patch(
+                        "app.fuzzing.orchestrator.response_analyzer.analyze",
+                        side_effect=analyze,
+                    ),
+                ):
                     fuzzed = await client.post(f"/targets/{target_id}/fuzz?count=1")
                 self.assertEqual(fuzzed.status_code, 200)
                 self.assertEqual(len(fuzzed.json()), 1)
+                self.assertIn("case", fuzzed.json()[0])
+                self.assertEqual(
+                    fuzzed.json()[0]["case"]["case_id"],
+                    fuzzed.json()[0]["execution"]["case_id"],
+                )
+                self.assertIn("mutation_strategy", fuzzed.json()[0]["case"])
                 self.assertIn("execution", fuzzed.json()[0])
                 self.assertIn("analysis", fuzzed.json()[0])
+                analysis = fuzzed.json()[0]["analysis"]
+                self.assertEqual(analysis["status"], "fail")
+                self.assertTrue(analysis["vulnerable"])
+
+                finding = analysis["findings"][0]
+                self.assertEqual(
+                    finding["metadata"]["evidence_assurance"],
+                    "response_claim_only",
+                )
+                self.assertFalse(
+                    finding["metadata"]["external_impact_verified"]
+                )
+                self.assertEqual(
+                    finding["metadata"]["indicators"][0]["metadata"][
+                        "verification_level"
+                    ],
+                    "response_claim_only",
+                )
 
                 scan_case = FuzzCase(
                     case_id="scan-case",
@@ -673,11 +793,48 @@ class ApiCompatibilityTests(unittest.TestCase):
                     response_time_ms=1.0,
                     message="ok",
                 )
+                scan_indicator = BehavioralIndicator(
+                    indicator_type=IndicatorType.INSTRUCTION_FOLLOWED,
+                    description="The response followed an untrusted instruction.",
+                    evidence="Synthetic test evidence",
+                    confidence=Confidence.HIGH,
+                    category=scan_case.category,
+                    metadata={
+                        "verification_level": "response_behavior_observed",
+                        "external_impact_verified": False,
+                    },
+                )
+                scan_finding = Finding(
+                    finding_id="scan-finding",
+                    case_id=scan_case.case_id,
+                    target_id=target_id,
+                    category=scan_case.category,
+                    title="Synthetic analysis finding",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.HIGH,
+                    evidence="Synthetic test evidence",
+                    recommendation="Validate the behavior in a controlled environment.",
+                    reproducibility={
+                        "provider": "groq",
+                        "model": "test-model",
+                        "execution_status": "completed",
+                        "response_truncated": True,
+                        "mutation_strategy": scan_case.mutation_strategy,
+                    },
+                    metadata={
+                        "evidence_assurance": "response_behavior_observed",
+                        "external_impact_verified": False,
+                        "indicators": [scan_indicator.model_dump(mode="json")],
+                    },
+                )
                 scan_analysis = AnalysisResult(
                     target_id=target_id,
                     case_id=scan_case.case_id,
                     category=scan_case.category,
-                    vulnerable=False,
+                    vulnerable=True,
+                    status=AnalysisStatus.FAIL,
+                    findings=[scan_finding],
+                    indicators=[scan_indicator],
                 )
                 with patch(
                     "app.fuzzing.scheduler.fuzz_orchestrator.run",
@@ -706,6 +863,50 @@ class ApiCompatibilityTests(unittest.TestCase):
                     scan_results = await client.get(f"/scans/{scan_id}/results")
                     self.assertEqual(scan_results.status_code, 200)
                     self.assertEqual(len(scan_results.json()), 1)
+
+                    result = scan_results.json()[0]
+                    self.assertEqual(result["case"]["case_id"], scan_case.case_id)
+                    self.assertEqual(
+                        result["case"]["mutation_strategy"],
+                        scan_case.mutation_strategy,
+                    )
+                    self.assertEqual(result["analysis"]["status"], "fail")
+                    self.assertTrue(result["analysis"]["vulnerable"])
+                    self.assertEqual(
+                        result["analysis"]["indicators"][0]["metadata"][
+                            "verification_level"
+                        ],
+                        "response_behavior_observed",
+                    )
+                    self.assertFalse(
+                        result["analysis"]["indicators"][0]["metadata"][
+                            "external_impact_verified"
+                        ]
+                    )
+
+                    finding = result["analysis"]["findings"][0]
+                    self.assertEqual(
+                        finding["metadata"]["evidence_assurance"],
+                        "response_behavior_observed",
+                    )
+                    self.assertFalse(
+                        finding["metadata"]["external_impact_verified"]
+                    )
+                    self.assertEqual(
+                        finding["reproducibility"]["provider"], "groq"
+                    )
+                    self.assertEqual(
+                        finding["reproducibility"]["model"], "test-model"
+                    )
+                    self.assertTrue(
+                        finding["reproducibility"]["response_truncated"]
+                    )
+                    self.assertEqual(
+                        finding["metadata"]["indicators"][0]["metadata"][
+                            "verification_level"
+                        ],
+                        "response_behavior_observed",
+                    )
 
         asyncio.run(exercise_routes())
 

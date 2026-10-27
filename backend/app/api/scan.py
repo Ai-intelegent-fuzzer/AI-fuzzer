@@ -5,10 +5,11 @@ from app.analysis.models import AnalysisResult
 from app.execution.models import ExecutionResult
 from app.fuzzing.orchestrator import fuzz_orchestrator
 from app.adapters.manager import target_manager
-from app.fuzzing.models import ScanCreateRequest, ScanRecord
+from app.fuzzing.models import FuzzCase, ScanCreateRequest, ScanRecord
 from app.fuzzing.scheduler import scan_scheduler
 
 class ScanResult(BaseModel):
+    case: FuzzCase
     execution: ExecutionResult
     analysis: AnalysisResult
 

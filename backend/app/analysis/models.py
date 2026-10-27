@@ -1,4 +1,5 @@
 from enum import Enum
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,12 @@ class Confidence(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class AnalysisStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
 
 
 class IndicatorType(str, Enum):
@@ -42,6 +49,7 @@ class BehavioralIndicator(BaseModel):
 
 class AnalysisAssessment(BaseModel):
     vulnerable: bool
+    status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
     severity: Severity
     confidence: Confidence
     evidence: str
@@ -55,12 +63,16 @@ class Finding(BaseModel):
     finding_id: str
     case_id: str
     target_id: str
+    scan_id: str | None = None
     category: str
     title: str
+    description: str | None = None
+    detection_rationale: str | None = None
     severity: Severity
     confidence: Confidence
     evidence: str
     recommendation: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     attack_id: str | None = None
     attack_category: str | None = None
     attack_name: str | None = None
@@ -74,8 +86,10 @@ class Finding(BaseModel):
 class AnalysisResult(BaseModel):
     target_id: str
     case_id: str
+    scan_id: str | None = None
     category: str
     vulnerable: bool
+    status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
     findings: list[Finding] = Field(default_factory=list)
     attack_id: str | None = None
     expected_behavior: str | None = None

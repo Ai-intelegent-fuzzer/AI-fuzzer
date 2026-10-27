@@ -28,6 +28,7 @@ class FuzzOrchestrator:
         execution_order: str = "generated",
         multi_turn: bool = False,
         turns_per_conversation: int = 3,
+        scan_id: str | None = None,
         cancel_event: Event | None = None,
         on_cases_generated: Callable[[list[FuzzCase]], None] | None = None,
     ) -> list[dict[str, object]] | None:
@@ -50,6 +51,8 @@ class FuzzOrchestrator:
                 max_retries=max_retries,
                 conversation_context=conversation_context,
             )
+            if scan_id is not None:
+                execution = execution.model_copy(update={"scan_id": scan_id})
             analysis = response_analyzer.analyze(
                 execution=execution,
                 category=fuzz_case.category,
