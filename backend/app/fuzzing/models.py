@@ -44,7 +44,15 @@ class ScanStatus(str, Enum):
 
 class ScanCreateRequest(BaseModel):
     target_id: str
-    count: int = Field(default=10, ge=1, le=100)
+    count: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description=(
+            "Number of base fuzz cases to generate. Mutations are additional cases "
+            "and may increase generated and executed totals."
+        ),
+    )
     categories: list[str] | None = None
     max_mutation_depth: int = Field(default=1, ge=0, le=5)
     max_mutations_per_case: int = Field(default=10, ge=0, le=10)

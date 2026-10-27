@@ -7,18 +7,57 @@ import httpx
 from dotenv import load_dotenv
 
 from app.adapters.models import AIProvider, Target, TargetType
-from app.adapters.provider_security import bounded_post, validate_provider_endpoint
+from app.adapters.provider_security import (
+    MAX_PROVIDER_RESPONSE_BYTES as _MAX_PROVIDER_RESPONSE_BYTES,
+    bounded_post,
+    validate_provider_endpoint,
+)
 from app.fuzzing.models import FuzzCase
 from .models import ExecutionResult
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
+def _is_trusted_provider_endpoint(target: Target) -> bool:
+    try:
+        validate_provider_endpoint(target.provider.value, str(target.endpoint))
+    except ValueError:
+        return False
+    return True
+
+
+def _post_provider_request(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, object],
+    timeout: float,
+    max_response_bytes: int,
+) -> httpx.Response:
+    response = bounded_post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+        max_bytes=max_response_bytes,
+    )
+    response.extensions["provider_response_too_large"] = response.extensions.get(
+        "ai_fuzzer_response_too_large", False
+    )
+    return response
+
+
+def _token_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 class FuzzExecutor:
     MAX_TIMEOUT_SECONDS = 120.0
     MAX_RETRIES = 5
     MAX_RESPONSE_SIZE = 10000
-    MAX_PROVIDER_RESPONSE_BYTES = 1_000_000
+    MAX_PROVIDER_RESPONSE_BYTES = _MAX_PROVIDER_RESPONSE_BYTES
 
     def execute(
         self,
@@ -203,12 +242,10 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
-        try:
-            validate_provider_endpoint("gemini", str(target.endpoint))
-        except ValueError:
+        if not _is_trusted_provider_endpoint(target):
             return result(
                 status="configuration_error",
-                message="Gemini endpoint must use the official HTTPS API host.",
+                message="Gemini endpoint must use the official HTTPS API endpoint.",
                 failure_reason="provider_endpoint_untrusted",
             )
         if not model:
@@ -246,7 +283,7 @@ class FuzzExecutor:
                     "parts": [{"text": prompt}],
                 }
             ],
-            "generationConfig": {"maxOutputTokens": 256},
+            "generationConfig": {"maxOutputTokens": 256, "thinkingConfig": {"thinkingLevel": "low"}},
         }
         system_instruction = fuzz_case.metadata.get(
             "security_test_system_instruction"
@@ -258,15 +295,15 @@ class FuzzExecutor:
 
         for attempt in range(retries + 1):
             try:
-                response = bounded_post(
+                response = _post_provider_request(
                     endpoint,
                     headers={
                         "x-goog-api-key": api_key,
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    payload=payload,
                     timeout=timeout,
-                    max_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
+                    max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 if response.extensions.get("ai_fuzzer_response_too_large"):
                     return result(
@@ -307,6 +344,15 @@ class FuzzExecutor:
                         attempts=attempt + 1,
                     )
 
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Gemini endpoint redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
+
                 if response.status_code >= 400:
                     return result(
                         status="target_error",
@@ -316,6 +362,15 @@ class FuzzExecutor:
                             "Check the endpoint, model, and API access."
                         ),
                         failure_reason="provider_request_rejected",
+                        attempts=attempt + 1,
+                    )
+
+                if response.extensions.get("provider_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Gemini response exceeded the configured provider response bound.",
+                        failure_reason="provider_response_too_large",
                         attempts=attempt + 1,
                     )
 
@@ -389,16 +444,20 @@ class FuzzExecutor:
                         attempts=attempt + 1,
                     )
 
-                usage = data.get("usageMetadata") or {}
+                usage = data.get("usageMetadata")
+                if not isinstance(usage, dict):
+                    usage = {}
                 return result(
                     status="completed",
                     status_code=response.status_code,
                     message="Real Gemini inference completed.",
                     response_body=content[:limit],
                     attempts=attempt + 1,
-                    prompt_tokens=usage.get("promptTokenCount"),
-                    completion_tokens=usage.get("candidatesTokenCount"),
-                    total_tokens=usage.get("totalTokenCount"),
+                    prompt_tokens=_token_count(usage.get("promptTokenCount")),
+                    completion_tokens=_token_count(
+                        usage.get("candidatesTokenCount")
+                    ),
+                    total_tokens=_token_count(usage.get("totalTokenCount")),
                     response_truncated=len(content) > limit,
                 )
 
@@ -478,12 +537,10 @@ class FuzzExecutor:
                 response_truncated=response_truncated,
             )
 
-        try:
-            validate_provider_endpoint(provider, str(target.endpoint))
-        except ValueError:
+        if not _is_trusted_provider_endpoint(target):
             return result(
                 status="configuration_error",
-                message="Provider endpoint must use the official HTTPS API host and route.",
+                message=f"{provider.title()} endpoint must use its official HTTPS API endpoint.",
                 failure_reason="provider_endpoint_untrusted",
             )
         if not model:
@@ -512,21 +569,27 @@ class FuzzExecutor:
             for turn in conversation_context:
                 messages.append({"role": "user", "content": turn})
         messages.append({"role": "user", "content": fuzz_case.prompt})
-        payload = {"model": model, "messages": messages, "max_completion_tokens": 1024}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": 1024,
+        }
+        if target.provider == AIProvider.GROQ:
+            payload["include_reasoning"] = False
         retries = min(max(max_retries, 0), self.MAX_RETRIES)
         last_status_code: int | None = None
 
         for attempt in range(retries + 1):
             try:
-                response = bounded_post(
+                response = _post_provider_request(
                     str(target.endpoint),
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=payload,
+                    payload=payload,
                     timeout=timeout,
-                    max_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
+                    max_response_bytes=self.MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 last_status_code = response.status_code
                 if response.extensions.get("ai_fuzzer_response_too_large"):
@@ -572,6 +635,22 @@ class FuzzExecutor:
                         failure_reason="provider_request_rejected",
                         attempts=attempt + 1,
                     )
+                if 300 <= response.status_code < 400:
+                    return result(
+                        status="target_error",
+                        status_code=response.status_code,
+                        message="Provider endpoint redirects are not followed.",
+                        failure_reason="provider_redirect_rejected",
+                        attempts=attempt + 1,
+                    )
+                if response.extensions.get("provider_response_too_large"):
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider response exceeded the configured provider response bound.",
+                        failure_reason="provider_response_too_large",
+                        attempts=attempt + 1,
+                    )
                 try:
                     data = response.json()
                     choices = data["choices"]
@@ -586,7 +665,17 @@ class FuzzExecutor:
                         failure_reason="provider_response_malformed",
                         attempts=attempt + 1,
                     )
-                usage = data.get("usage") or {}
+                if not content.strip():
+                    return result(
+                        status="invalid_response",
+                        status_code=response.status_code,
+                        message="Provider returned an empty chat-completions response.",
+                        failure_reason="provider_response_empty",
+                        attempts=attempt + 1,
+                    )
+                usage = data.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
                 body = content[:limit]
                 return result(
                     status="completed",
@@ -594,9 +683,11 @@ class FuzzExecutor:
                     message="Real provider inference completed.",
                     response_body=body,
                     attempts=attempt + 1,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    total_tokens=usage.get("total_tokens"),
+                    prompt_tokens=_token_count(usage.get("prompt_tokens")),
+                    completion_tokens=_token_count(
+                        usage.get("completion_tokens")
+                    ),
+                    total_tokens=_token_count(usage.get("total_tokens")),
                     response_truncated=len(content) > limit,
                 )
             except httpx.TimeoutException:

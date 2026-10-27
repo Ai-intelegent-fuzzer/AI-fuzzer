@@ -44,15 +44,16 @@ class ConnectivityTester:
             )
 
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(str(target.endpoint))
+            with httpx.Client(timeout=10.0, follow_redirects=False) as client:
+                with client.stream("GET", str(target.endpoint)) as response:
+                    status_code = response.status_code
 
             elapsed = (time.perf_counter() - start) * 1000
 
             return ConnectivityResult(
                 target_id=target.target_id,
                 status=ConnectivityStatus.REACHABLE,
-                status_code=response.status_code,
+                status_code=status_code,
                 response_time_ms=round(elapsed, 2),
                 message="Target endpoint is reachable.",
             )

@@ -6,7 +6,11 @@ from app.execution.models import ExecutionResult
 from app.fuzzing.orchestrator import fuzz_orchestrator
 from app.adapters.manager import target_manager
 from app.fuzzing.models import FuzzCase, ScanCreateRequest, ScanRecord
-from app.fuzzing.scheduler import ScanQueueFullError, scan_scheduler
+from app.fuzzing.scheduler import (
+    ScanQueueFullError,
+    ScanSchedulerShuttingDownError,
+    scan_scheduler,
+)
 
 class ScanResult(BaseModel):
     case: FuzzCase
@@ -49,10 +53,16 @@ def start_scan(request: ScanCreateRequest) -> ScanRecord:
         raise HTTPException(status_code=404, detail="Target not found")
     try:
         return scan_scheduler.start(request)
-    except ScanQueueFullError as exc:
+    except ScanQueueFullError:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=str(exc),
+            detail="Scan queue is full. Retry after an existing scan finishes.",
+            headers={"Retry-After": "2"},
+        ) from None
+    except ScanSchedulerShuttingDownError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Scan scheduler is shutting down. Retry later.",
             headers={"Retry-After": "2"},
         ) from None
 

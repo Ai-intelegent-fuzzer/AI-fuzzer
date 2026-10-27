@@ -15,7 +15,11 @@ from app.fuzzing.orchestrator import fuzz_orchestrator
 
 
 class ScanQueueFullError(RuntimeError):
-    """Raised when scan admission is rejected to apply backpressure."""
+    """Raised when the bounded scan queue has no capacity."""
+
+
+class ScanSchedulerShuttingDownError(RuntimeError):
+    """Raised when a scan is submitted after scheduler shutdown begins."""
 
 
 class ScanScheduler:
@@ -37,11 +41,34 @@ class ScanScheduler:
         self._max_retained_scans = max(1, max_retained_scans)
         self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
         self._lock = Lock()
+        self._shutdown = False
         self._scans: dict[str, ScanRecord] = {}
         self._requests: dict[str, ScanCreateRequest] = {}
         self._results: dict[str, list[dict[str, object]]] = {}
         self._cancel_events: dict[str, Event] = {}
         self._futures: dict[str, Future[None]] = {}
+
+    def _remove_scan_locked(self, scan_id: str) -> None:
+        self._scans.pop(scan_id, None)
+        self._requests.pop(scan_id, None)
+        self._results.pop(scan_id, None)
+        self._cancel_events.pop(scan_id, None)
+        self._futures.pop(scan_id, None)
+
+    def _prune_retained_locked(self) -> None:
+        # Dict insertion order gives us oldest-first retention without a second index.
+        while len(self._scans) >= self._max_retained_scans:
+            oldest_terminal = next(
+                (
+                    scan_id
+                    for scan_id, scan in self._scans.items()
+                    if scan.status in self.TERMINAL_STATUSES
+                ),
+                None,
+            )
+            if oldest_terminal is None:
+                return
+            self._remove_scan_locked(oldest_terminal)
 
     def start(self, request: ScanCreateRequest) -> ScanRecord:
         scan_id = str(uuid4())
@@ -52,6 +79,8 @@ class ScanScheduler:
             requested_case_count=request.count,
         )
         with self._lock:
+            if self._shutdown:
+                raise ScanSchedulerShuttingDownError("Scan scheduler is shutting down.")
             self._prune_retained_locked()
             active = sum(
                 item.status not in self.TERMINAL_STATUSES
@@ -68,6 +97,20 @@ class ScanScheduler:
             self._futures[scan_id] = self._executor.submit(self._run, scan_id)
         return scan.model_copy(deep=True)
 
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Signal running scans to stop and cancel work that has not started."""
+        with self._lock:
+            self._shutdown = True
+            for cancel_event in self._cancel_events.values():
+                cancel_event.set()
+            for scan_id, future in list(self._futures.items()):
+                if not future.running() and future.cancel():
+                    scan = self._scans.get(scan_id)
+                    if scan is not None:
+                        scan.status = ScanStatus.CANCELLED
+                        scan.completed_at = datetime.now(timezone.utc)
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
     def get(self, scan_id: str) -> ScanRecord | None:
         with self._lock:
             scan = self._scans.get(scan_id)
@@ -83,11 +126,7 @@ class ScanScheduler:
             scan = self._scans.get(scan_id)
             if scan is None:
                 return None
-            if scan.status in {
-                ScanStatus.COMPLETED,
-                ScanStatus.FAILED,
-                ScanStatus.CANCELLED,
-            }:
+            if scan.status in self.TERMINAL_STATUSES:
                 return scan.model_copy(deep=True)
             self._cancel_events[scan_id].set()
             future = self._futures[scan_id]
@@ -147,13 +186,18 @@ class ScanScheduler:
                     ScanStatus.CANCELLED if cancel_event.is_set() else ScanStatus.COMPLETED
                 )
                 scan.completed_at = datetime.now(timezone.utc)
-        except Exception as exc:
+        except Exception:
             with self._lock:
                 scan = self._scans[scan_id]
-                scan.status = ScanStatus.FAILED
-                # Do not store raw exception text: it may contain request details or secrets.
-                scan.failure_reason = "Scan failed due to an internal execution error."
-                scan.error_count += 1
+                if cancel_event.is_set():
+                    scan.status = ScanStatus.CANCELLED
+                    scan.failure_reason = None
+                else:
+                    scan.status = ScanStatus.FAILED
+                    # Do not expose raw exception text: provider/network exceptions can
+                    # contain sensitive request details or credential-bearing URLs.
+                    scan.failure_reason = "Scan failed due to an internal error."
+                    scan.error_count += 1
                 scan.completed_at = datetime.now(timezone.utc)
         finally:
             with self._lock:
@@ -161,24 +205,6 @@ class ScanScheduler:
                 # can safely observe completion; retention pruning bounds this map.
                 self._requests.pop(scan_id, None)
                 self._cancel_events.pop(scan_id, None)
-
-    def _prune_retained_locked(self) -> None:
-        """Keep recent completed scans/results while never evicting active scans."""
-        while len(self._scans) >= self._max_retained_scans:
-            removable = next(
-                (
-                    scan_id for scan_id, scan in self._scans.items()
-                    if scan.status in self.TERMINAL_STATUSES
-                ),
-                None,
-            )
-            if removable is None:
-                return
-            self._scans.pop(removable, None)
-            self._requests.pop(removable, None)
-            self._results.pop(removable, None)
-            self._cancel_events.pop(removable, None)
-            self._futures.pop(removable, None)
 
     def _calculate_metrics(
         self,

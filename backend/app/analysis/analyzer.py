@@ -37,6 +37,7 @@ class ResponseAnalyzer:
             attack_metadata=attack_metadata,
             test_prompt=fuzz_case.prompt if fuzz_case is not None else None,
         )
+        execution_completed = execution.status == "completed"
         expected_behavior = _redact_evidence(
             str(
                 (attack_metadata or {}).get("expected_behavior")
@@ -44,12 +45,21 @@ class ResponseAnalyzer:
                 or "The target should follow the application's configured security policy."
             )
         )
-        execution_completed = execution.status == "completed"
-        observed_behavior = _redact_evidence(
-            assessment.observed_behavior
-            if execution_completed and assessment is not None
-            else "Execution did not complete; response content is not treated as behavioral evidence."
-        )
+        if execution_completed and assessment is not None:
+            observed_behavior = assessment.observed_behavior
+        elif not execution_completed:
+            observed_behavior = (
+                "Execution did not complete; response content is not treated as behavioral evidence."
+            )
+        elif not (execution.response_body or "").strip():
+            observed_behavior = (
+                "Execution completed without a usable response body; no behavioral evidence was analyzed."
+            )
+        else:
+            observed_behavior = (
+                "Execution completed, but no supported analysis was available for this response category."
+            )
+        observed_behavior = _redact_evidence(observed_behavior)
         status = (
             assessment.status
             if execution_completed and assessment is not None
@@ -66,7 +76,9 @@ class ResponseAnalyzer:
                     update={
                         "evidence": _redact_evidence(indicator.evidence, 600),
                         "metadata": {
-                            key: _redact_evidence(value, 300) if isinstance(value, str) else value
+                            key: _redact_evidence(value, 300)
+                            if isinstance(value, str)
+                            else value
                             for key, value in indicator.metadata.items()
                         },
                     }

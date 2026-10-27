@@ -5,7 +5,7 @@ AI-Fuzzer can send generated test prompts to authorized OpenAI, Groq, and Gemini
 ## Configure a provider
 
 1. From the repository root, copy `backend/.env.example` to `backend/.env`.
-2. Add your own provider key to exactly one of `GROQ_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Do not paste keys into source code, issue reports, scan prompts, or chat. The repository-root and backend environment files are Git-ignored; keep real credentials only in local `backend/.env`.
+2. Add your own provider key to exactly one of `GROQ_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` in the local `backend/.env` file. That file is Git-ignored and must not be committed. Do not paste keys into source code, issue reports, scan prompts, or chat.
 3. Start the backend from `backend/` so Python can load dependencies. The executor also loads the local `.env` by file path.
 4. For Groq, create an authorized key in the official console: https://console.groq.com/ . Set `GROQ_MODEL` to a model currently available to your account.
 5. For OpenAI, use an authorized API key and a model available to that project. Set `OPENAI_MODEL` accordingly.
@@ -51,7 +51,7 @@ Gemini example:
 }
 ```
 
-Use the endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results.
+For OpenAI and Groq, use the official endpoint path ending in `/chat/completions`. The key is selected server-side from the provider's environment variable and is never sent to the frontend or included in execution results. Gemini uses the official `generativelanguage.googleapis.com` HTTPS endpoint and sends its key in the `x-goog-api-key` header.
 
 ## Verify inference and run one safe case
 
@@ -80,7 +80,7 @@ Use the endpoint path ending in `/chat/completions`. The key is selected server-
 ```
 4. Poll `GET /scans/{scan_id}` and then inspect `GET /scans/{scan_id}/results`.
 
-Do not start with a large scan. The direct `/targets/{target_id}/fuzz?count=1` route may expand one seed into multiple mutations; the scan lifecycle endpoint with mutation depth and mutation count set to zero is the controlled single-case starting point.
+Do not start with a large scan. For scans, `count` is the number of base fuzz cases; mutations are additional cases, so generated and executed totals can exceed `count`. The direct `/targets/{target_id}/fuzz?count=1` route may expand one seed into multiple mutations. Set both `max_mutation_depth` and `max_mutations_per_case` to zero to run exactly the requested base cases without mutations.
 
 ## Results and errors
 

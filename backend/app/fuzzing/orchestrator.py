@@ -42,7 +42,10 @@ class FuzzOrchestrator:
             if cancel_event is not None and cancel_event.is_set():
                 return None
             if delay_seconds > 0:
-                wait_for_rate_limit()
+                if not wait_for_rate_limit():
+                    return None
+            if cancel_event is not None and cancel_event.is_set():
+                return None
             execution = fuzz_executor.execute(
                 target,
                 fuzz_case,
@@ -61,14 +64,23 @@ class FuzzOrchestrator:
         rate_lock = Lock()
         next_execution_at = 0.0
 
-        def wait_for_rate_limit() -> None:
+        def wait_for_rate_limit() -> bool:
             nonlocal next_execution_at
             if delay_seconds <= 0:
-                return
+                return cancel_event is None or not cancel_event.is_set()
             with rate_lock:
                 now = time.monotonic()
-                time.sleep(max(0.0, next_execution_at - now))
+                wait_seconds = max(0.0, next_execution_at - now)
+                if wait_seconds > 0:
+                    if cancel_event is not None:
+                        if cancel_event.wait(wait_seconds):
+                            return False
+                    else:
+                        time.sleep(wait_seconds)
+                if cancel_event is not None and cancel_event.is_set():
+                    return False
                 next_execution_at = time.monotonic() + min(delay_seconds, 10.0)
+                return True
 
         if multi_turn:
             turns = min(max(turns_per_conversation, 1), 10)

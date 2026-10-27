@@ -29,6 +29,7 @@ def validate_provider_endpoint(provider: str, endpoint: str) -> None:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.port not in (None, 443)
+        or parsed.query
         or parsed.fragment
     ):
         raise ValueError("Provider endpoint is not trusted; use the official HTTPS endpoint.")
@@ -36,8 +37,14 @@ def validate_provider_endpoint(provider: str, endpoint: str) -> None:
     expected_path = _PROVIDER_PATHS.get(provider)
     if expected_path and parsed.path.rstrip("/") != expected_path:
         raise ValueError("Provider endpoint path is not the supported API route.")
-    if provider == "gemini" and not parsed.path.startswith("/v1beta"):
-        raise ValueError("Gemini endpoint must use the supported /v1beta API path.")
+    if provider == "gemini":
+        path = parsed.path.rstrip("/")
+        if path not in {"/v1beta", "/v1beta/models"} and not (
+            path.startswith("/v1beta/models/")
+            and path.count("/") == 3
+            and bool(path.rsplit("/", 1)[-1])
+        ):
+            raise ValueError("Gemini endpoint must use a supported /v1beta API path.")
 
 
 def bounded_post(
