@@ -1,59 +1,40 @@
-import { Download, FileJson, FileText } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
+import { FileJson, Search } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { EmptyState } from '../components/common/EmptyState';
 import { SectionCard } from '../components/common/SectionCard';
-import { mockReports } from '../data/mockData';
 
 export function ReportsPage() {
-  const handleDownloadJson = (reportId: string, title: string) => {
-    const report = mockReports.find((item) => item.reportId === reportId);
-    if (!report) {
-      return;
-    }
+  const [scanId, setScanId] = useState('');
+  const navigate = useNavigate();
 
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-report.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = scanId.trim();
+    if (value) navigate(`/reports/${encodeURIComponent(value)}`);
   };
 
   return (
     <div className="content-stack">
-      <SectionCard title="Assessment Reports" subtitle="JSON and PDF exports for executive and technical review">
-        <div className="report-grid">
-          {mockReports.map((report) => (
-            <article key={report.reportId} className="report-card">
-              <div className="report-card__icon">
-                {report.format === 'JSON' ? <FileJson size={18} /> : <FileText size={18} />}
-              </div>
-
-              <div className="report-card__body">
-                <div className="report-card__header">
-                  <h3>{report.title}</h3>
-                  <span className="report-format">{report.format}</span>
-                </div>
-                <p>{report.summary}</p>
-                <div className="report-card__meta">
-                  <span>{report.reportId}</span>
-                  <span>{report.findingsCount} findings</span>
-                  <span>{new Date(report.generatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
-                </div>
-              </div>
-
-              <div className="button-row button-row--stacked">
-                <Link to={`/reports/${report.reportId}`} className="secondary-button" state={{ fromReports: true }}>
-                  Open report
-                </Link>
-                <button type="button" className="secondary-button" onClick={() => handleDownloadJson(report.reportId, report.title)}>
-                  <Download size={14} />
-                  Download JSON
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
+      <SectionCard title="Assessment Reports" subtitle="Generate a report from a real scan record and its results">
+        <form className="toolbar-row" onSubmit={handleSubmit}>
+          <div className="search-box">
+            <Search size={15} />
+            <input
+              type="text"
+              value={scanId}
+              onChange={(event) => setScanId(event.target.value)}
+              placeholder="Enter scan ID"
+              aria-label="Scan ID for report"
+              required
+            />
+          </div>
+          <button type="submit" className="primary-button"><FileJson size={14} /> Open report</button>
+        </form>
+        <EmptyState
+          title="Reports are generated on demand"
+          description="The backend does not provide a report-list or report-generation API. The frontend can assemble a JSON export from scan data that the backend actually returns."
+        />
       </SectionCard>
     </div>
   );

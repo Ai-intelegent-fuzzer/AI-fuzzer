@@ -1,102 +1,88 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Clock3, Gauge, Target as TargetIcon } from 'lucide-react';
+import { ArrowLeft, Clock3, Target as TargetIcon } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { EmptyState } from '../components/common/EmptyState';
 import { StatusBadge } from '../components/common/StatusBadge';
-import { mockAppService } from '../services/mockApi';
-import type { Scan } from '../types';
+import { ApiError, getScan, getScanResults } from '../services/api';
+import type { ApiScanRecord, ApiScanResult } from '../types';
 
-const stageSequence = [
-  'Preparing Test Cases',
-  'Generating Mutations',
-  'Executing Tests',
-  'Analyzing Responses',
-  'Classifying Findings',
-  'Preserving Evidence',
-  'Finalizing Report',
-];
+const activeStatuses = new Set(['created', 'queued', 'running', 'paused']);
+
+function readableStatus(value: string): string {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayDate(value: string | null): string {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? 'Invalid timestamp returned'
+    : date.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+}
 
 export function ScanDetailsPage() {
-  const { scanId } = useParams();
-  const [scan, setScan] = useState<Scan | null>(null);
+  const { scanId = '' } = useParams();
+  const [scan, setScan] = useState<ApiScanRecord | null>(null);
+  const [results, setResults] = useState<ApiScanResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
-    let isMounted = true;
+    let cancelled = false;
+    let timer: number | undefined;
 
-    mockAppService
-      .getScan(scanId ?? '')
-      .then((result) => {
-        if (isMounted) {
-          setScan(result);
+    const load = async () => {
+      try {
+        const [scanResult, resultRows] = await Promise.all([
+          getScan(scanId),
+          getScanResults(scanId),
+        ]);
+        if (cancelled) return;
+        setScan(scanResult);
+        setResults(resultRows);
+        setError('');
+        if (activeStatuses.has(scanResult.status)) {
+          timer = window.setTimeout(() => void load(), 4000);
         }
-      })
-      .finally(() => {
-        if (isMounted) {
-          setLoading(false);
+      } catch (requestError) {
+        if (!cancelled) {
+          setError(requestError instanceof ApiError ? requestError.message : 'Unable to load scan data.');
         }
-      });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void load();
 
     return () => {
-      isMounted = false;
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [scanId]);
+  }, [scanId, refreshKey]);
 
-  useEffect(() => {
-    if (!scan || scan.status !== 'Running') {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      setScan((current) => {
-        if (!current || current.status !== 'Running') {
-          return current;
-        }
-
-        const nextSeconds = (current.elapsedSeconds ?? 0) + 1;
-        const nextProgress = Math.min(98, Math.round((nextSeconds / 180) * 100));
-        const stageIndex = Math.min(stageSequence.length - 1, Math.floor(nextSeconds / 24));
-
-        return {
-          ...current,
-          elapsedSeconds: nextSeconds,
-          progress: nextProgress,
-          currentStage: stageSequence[stageIndex],
-          testsCompleted: Math.min(current.testsTotal, current.testsCompleted + 2),
-          findingsCount: Math.min(current.findingsCount + (nextSeconds % 18 === 0 ? 1 : 0), current.testsTotal),
-          duration: new Date(nextSeconds * 1000).toISOString().slice(14, 19),
-        };
-      });
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [scan]);
-
-  const handleCancel = async () => {
-    if (!scan) {
-      return;
-    }
-
-    const updated = await mockAppService.cancelScan(scan.scanId);
-    if (updated) {
-      setScan(updated);
-    }
-  };
-
-  if (loading) {
-    return <div className="page-loading">Loading scan details…</div>;
+  if (loading && !scan) {
+    return <div className="page-loading">Loading scan record…</div>;
   }
 
   if (!scan) {
     return (
       <EmptyState
-        title="Scan not found"
-        description="The requested scan record is not available in the mock dataset."
+        title="Scan record unavailable"
+        description={error || 'No scan data was returned for this ID.'}
         action={
-          <Link to="/scans/history" className="primary-button">
-            <ArrowLeft size={14} />
-            Return to history
-          </Link>
+          <div className="button-row">
+            <button type="button" className="primary-button" onClick={() => {
+              setLoading(true);
+              setRefreshKey((key) => key + 1);
+            }}>
+              Retry
+            </button>
+            <Link to="/scans/history" className="secondary-button">
+              <ArrowLeft size={14} /> Back to scan lookup
+            </Link>
+          </div>
         }
       />
     );
@@ -104,106 +90,100 @@ export function ScanDetailsPage() {
 
   return (
     <div className="content-stack">
+      {error ? <div className="inline-message inline-message--error" role="alert">{error}</div> : null}
       <div className="detail-header">
         <div>
-          <div className="eyebrow">Assessment details</div>
-          <h2>{scan.scanId}</h2>
+          <div className="eyebrow">Backend scan record</div>
+          <h2>{scan.scan_id}</h2>
         </div>
-        <div className="button-row">
-          <button type="button" className="secondary-button" onClick={handleCancel} disabled={scan.status === 'Cancelled' || scan.status === 'Completed' || scan.status === 'Failed'}>
-            Cancel scan
-          </button>
-          <Link to="/scans/history" className="secondary-button">
-            <ArrowLeft size={14} />
-            Back to scan history
-          </Link>
-        </div>
+        <Link to="/scans/history" className="secondary-button">
+          <ArrowLeft size={14} /> Back to scan lookup
+        </Link>
       </div>
 
       <section className="section-card">
         <div className="detail-summary-grid">
-          <div>
-            <p className="muted-label">Scan</p>
-            <h3>{scan.name ?? scan.target}</h3>
-          </div>
-          <div>
-            <p className="muted-label">Target</p>
-            <div className="inline-row">
-              <TargetIcon size={14} />
-              <span>{scan.target}</span>
-            </div>
-          </div>
-          <div>
-            <p className="muted-label">Status</p>
-            <StatusBadge status={scan.status} />
-          </div>
-          <div>
-            <p className="muted-label">Tests</p>
-            <span>{scan.testsCompleted}/{scan.testsTotal}</span>
-          </div>
-          <div>
-            <p className="muted-label">Findings</p>
-            <span>{scan.findingsCount}</span>
-          </div>
-          <div>
-            <p className="muted-label">Duration</p>
-            <div className="inline-row">
-              <Clock3 size={14} />
-              <span>{scan.duration}</span>
-            </div>
-          </div>
+          <div><p className="muted-label">Target ID</p><div className="inline-row"><TargetIcon size={14} /><span className="mono-text">{scan.target_id}</span></div></div>
+          <div><p className="muted-label">Status</p><StatusBadge status={readableStatus(scan.status)} /></div>
+          <div><p className="muted-label">Requested cases</p><span>{scan.requested_case_count}</span></div>
+          <div><p className="muted-label">Generated cases</p><span>{scan.generated_case_count}</span></div>
+          <div><p className="muted-label">Executed cases</p><span>{scan.executed_case_count}</span></div>
+          <div><p className="muted-label">Findings</p><span>{scan.finding_count}</span></div>
         </div>
       </section>
 
       <div className="two-column-grid">
         <section className="section-card">
-          <div className="section-card__header">
-            <div>
-              <h2>Configuration</h2>
-              <p>Selected categories and runtime profile.</p>
-            </div>
-          </div>
+          <div className="section-card__header"><div><h2>Execution metadata</h2><p>Only values returned by the scan API are shown.</p></div></div>
           <div className="detail-list">
-            <div><span>Categories</span><strong>{(scan.categories ?? []).join(', ') || 'Not specified'}</strong></div>
-            <div><span>Profile</span><strong>{scan.profile ?? 'Standard'}</strong></div>
-            <div><span>Request timeout</span><strong>{scan.timeout ?? 60}s</strong></div>
-            <div><span>Delay / rate control</span><strong>{scan.delayMs ?? 250} ms</strong></div>
+            <div><span>Created</span><strong>{displayDate(scan.created_at)}</strong></div>
+            <div><span>Started</span><strong>{displayDate(scan.started_at)}</strong></div>
+            <div><span>Completed</span><strong>{displayDate(scan.completed_at)}</strong></div>
+            <div><span>Execution errors</span><strong>{scan.error_count}</strong></div>
+            <div><span>Elapsed execution time</span><strong>{Math.round(scan.metrics.total_execution_time_ms)} ms</strong></div>
+            <div><span>Categories tested</span><strong>{scan.metrics.categories_tested.join(', ') || 'Not reported'}</strong></div>
+            {scan.failure_reason ? <div><span>Failure reason</span><strong>{scan.failure_reason}</strong></div> : null}
           </div>
         </section>
 
         <section className="section-card">
-          <div className="section-card__header">
-            <div>
-              <h2>Execution summary</h2>
-              <p>Observed scan runtime details.</p>
-            </div>
-          </div>
+          <div className="section-card__header"><div><h2>Coverage</h2><p>Backend-reported scan metrics.</p></div></div>
           <div className="detail-list">
-            <div><span>Started</span><strong>{new Date(scan.startedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</strong></div>
-            <div><span>Ended</span><strong>{scan.endedAt ? new Date(scan.endedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : 'In progress'}</strong></div>
-            <div><span>Progress</span><strong>{scan.progress ?? 0}%</strong></div>
-            <div><span>Current stage</span><strong>{scan.currentStage ?? 'Preparing Test Cases'}</strong></div>
+            <div><span>Unique test cases</span><strong>{scan.coverage.unique_test_cases}</strong></div>
+            <div><span>Unique prompts</span><strong>{scan.coverage.unique_prompts}</strong></div>
+            <div><span>Target responses</span><strong>{scan.coverage.target_responses}</strong></div>
+            <div><span>Mutations generated</span><strong>{scan.metrics.mutations_generated}</strong></div>
+            <div><span>Mutation strategies</span><strong>{scan.metrics.mutation_strategies_used.join(', ') || 'None reported'}</strong></div>
+            <div><span>Retries</span><strong>{scan.metrics.retries}</strong></div>
           </div>
         </section>
       </div>
 
       <section className="section-card">
         <div className="section-card__header">
-          <div>
-            <h2>Scan evidence</h2>
-            <p>Demo-safe metadata captured for this execution.</p>
-          </div>
+          <div><h2>Scan results</h2><p>Execution errors are displayed separately from analyzer verdicts.</p></div>
+          {activeStatuses.has(scan.status) ? <span className="inline-row"><Clock3 size={14} /> Refreshing status every 4 seconds</span> : null}
         </div>
-        <div className="scan-evidence-box">
-          <div className="scan-evidence-box__header">
-            <Gauge size={15} />
-            <span>Prepared for review</span>
+        {results.length === 0 ? (
+          <EmptyState
+            title={activeStatuses.has(scan.status) ? 'No results reported yet' : 'No result records returned'}
+            description="The backend has not returned result rows for this scan."
+          />
+        ) : (
+          <div className="content-stack">
+            {results.map((result) => (
+              <article className="evidence-panel" key={`${result.case.case_id}-${result.execution.status}`}>
+                <div className="evidence-panel__header">
+                  <span className="mono-text">{result.case.case_id}</span>
+                  <span className={`status-badge status-badge--${result.analysis.status === 'fail' ? 'danger' : result.analysis.status === 'pass' ? 'success' : 'warning'}`}>
+                    {readableStatus(result.analysis.status)}
+                  </span>
+                </div>
+                <div className="detail-list">
+                  <div><span>Category</span><strong>{result.analysis.category}</strong></div>
+                  <div><span>Execution status</span><strong>{readableStatus(result.execution.status)}</strong></div>
+                  <div><span>Provider / model</span><strong>{[result.execution.provider, result.execution.model].filter(Boolean).join(' / ') || 'Not reported'}</strong></div>
+                  <div><span>Response time</span><strong>{result.execution.response_time_ms === null ? 'Not reported' : `${result.execution.response_time_ms} ms`}</strong></div>
+                  {result.execution.failure_reason ? <div><span>Execution error</span><strong>{result.execution.failure_reason}</strong></div> : null}
+                </div>
+                {result.analysis.expected_behavior ? <p><strong>Expected:</strong> {result.analysis.expected_behavior}</p> : null}
+                {result.analysis.observed_behavior ? <p><strong>Observed:</strong> {result.analysis.observed_behavior}</p> : null}
+                {result.analysis.findings.map((finding) => (
+                  <div className="detail-block detail-block--stacked" key={finding.finding_id}>
+                    <div className="evidence-panel__header">
+                      <strong>{finding.title}</strong>
+                      <span className={`severity-badge severity-badge--${finding.severity.toLowerCase()}`}>{readableStatus(finding.severity)}</span>
+                    </div>
+                    <p>{finding.description || finding.detection_rationale || 'No description returned.'}</p>
+                    <p><strong>Confidence:</strong> {readableStatus(finding.confidence)}</p>
+                    <pre className="code-block">{finding.evidence}</pre>
+                    <p><strong>Recommendation:</strong> {finding.recommendation}</p>
+                  </div>
+                ))}
+              </article>
+            ))}
           </div>
-          <p>
-            Synthetic evidence has been recorded for this assessment without exposing real credentials,
-            production tokens, or user data.
-          </p>
-        </div>
+        )}
       </section>
     </div>
   );

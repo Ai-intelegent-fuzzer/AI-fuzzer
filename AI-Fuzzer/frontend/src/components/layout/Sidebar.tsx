@@ -42,12 +42,12 @@ export function Sidebar() {
 
       <div className="sidebar-footer">
         <div className="mini-panel">
-          <div className="mini-panel__label">Threat posture</div>
-          <div className="mini-panel__value">Elevated</div>
+          <div className="mini-panel__label">Integration mode</div>
+          <div className="mini-panel__value">Read-only</div>
         </div>
         <div className="mini-panel mini-panel--muted">
           <BarChart3 size={14} />
-          <span>Live assessment</span>
+          <span>Backend records only</span>
         </div>
       </div>
     </aside>

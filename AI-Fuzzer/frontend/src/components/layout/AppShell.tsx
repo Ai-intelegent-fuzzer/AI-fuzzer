@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Activity, Bell, ShieldCheck } from 'lucide-react';
+import { Activity, Shield } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 
 interface AppShellProps {
@@ -23,22 +23,18 @@ export function AppShell({ title, subtitle, actions, children }: AppShellProps) 
           </div>
 
           <div className="topbar-actions">
-            <div className="status-chip status-chip--success" aria-live="polite">
+            <div className="status-chip" aria-live="polite">
               <Activity size={14} />
-              <span>Scanner operational</span>
+              <span>Read-only client</span>
             </div>
 
-            <button type="button" className="notification-btn" aria-label="Notifications">
-              <Bell size={16} />
-            </button>
-
-            <div className="user-profile" aria-label="User profile">
+            <div className="user-profile" aria-label="Authentication status">
               <div className="avatar-badge">
-                <ShieldCheck size={14} />
+                <Shield size={14} />
               </div>
               <div>
-                <strong>Sushil</strong>
-                <small>Frontend Engineer</small>
+                <strong>Local UI</strong>
+                <small>Authentication not configured</small>
               </div>
             </div>
           </div>
