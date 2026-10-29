@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Activity, Server, Target as TargetIcon } from 'lucide-react';
+import {
+  AlertTriangle,
+  Gauge,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { EmptyState } from '../components/common/EmptyState';
 import { MetricCard } from '../components/common/MetricCard';
@@ -29,13 +35,16 @@ export function DashboardPage() {
   }, [loadDashboard]);
 
   return (
-    <div className="content-stack">
+    <div className="dashboard-page">
       <div className="dashboard-hero">
         <div>
-          <p className="eyebrow">Backend overview</p>
-          <h2>Live service status and registered target inventory.</h2>
+          <p className="eyebrow">Security overview</p>
+          <h2>Monitor AI security scans, vulnerabilities, and testing activity.</h2>
         </div>
-        <Link to="/scans/history" className="primary-button">Look up a scan</Link>
+        <Link to="/scans/new" className="primary-button">
+          <Sparkles size={16} />
+          New Security Scan
+        </Link>
       </div>
 
       {error ? (
@@ -53,39 +62,96 @@ export function DashboardPage() {
 
       {loading ? <div className="page-loading">Loading live backend data…</div> : null}
 
-      {!loading && !error && health ? (
+      {!loading && !error ? (
         <>
           <div className="metric-grid">
             <MetricCard
-              icon={<Activity size={18} />}
-              label="Backend status"
-              value={health.status}
-              detail="Value returned by GET /health"
-              tone={health.status.toLowerCase() === 'healthy' ? 'success' : 'warning'}
+              icon={<ShieldCheck size={18} />}
+              label="Total Scans"
+              value="Unavailable"
+              detail="The backend has no scan-list or aggregate endpoint"
             />
             <MetricCard
-              icon={<TargetIcon size={18} />}
-              label="Registered targets"
-              value={String(targets.length)}
-              detail="Current in-memory target registry"
-              tone="default"
+              icon={<Gauge size={18} />}
+              label="Tests Executed"
+              value="Unavailable"
+              detail="Execution totals are only returned for a known scan ID"
+              tone="success"
             />
             <MetricCard
-              icon={<Server size={18} />}
-              label="Scan history"
-              value="ID lookup"
-              detail="Backend does not expose a scan-list route"
-              tone="default"
+              icon={<AlertTriangle size={18} />}
+              label="Vulnerabilities Found"
+              value="Unavailable"
+              detail="Findings can be reviewed after loading a scan"
+              tone="warning"
+            />
+            <MetricCard
+              icon={<ShieldAlert size={18} />}
+              label="Critical / High"
+              value="Unavailable"
+              detail="No cross-scan severity totals are available"
+              tone="danger"
             />
           </div>
 
-          <SectionCard title="Scan activity" subtitle="No scan totals or findings are inferred from unavailable endpoints.">
-            <EmptyState
-              title="Scan history must be opened by ID"
-              description="The backend provides scan details and results when given a scan ID, but it does not provide a list or aggregate statistics endpoint."
-              action={<Link to="/scans/history" className="secondary-button">Enter scan ID</Link>}
-            />
-          </SectionCard>
+          <div className="health-grid">
+            <div className="health-panel">
+              <div className="health-panel__label">Backend Service</div>
+              <div className="health-panel__value">{health?.status ?? 'Unavailable'}</div>
+            </div>
+            <div className="health-panel">
+              <div className="health-panel__label">Registered Targets</div>
+              <div className="health-panel__value">{targets.length}</div>
+            </div>
+            <div className="health-panel">
+              <div className="health-panel__label">Response Analyzer</div>
+              <div className="health-panel__value">Not reported by health endpoint</div>
+            </div>
+            <div className="health-panel">
+              <div className="health-panel__label">Active Scans</div>
+              <div className="health-panel__value">Unavailable without a scan ID</div>
+            </div>
+          </div>
+
+          <div className="chart-grid">
+            <SectionCard title="Severity Distribution" subtitle="Detected risk mix across completed scans">
+              <div className="chart-wrap chart-wrap--bar">
+                <EmptyState
+                  title="Severity totals unavailable"
+                  description="The backend does not expose aggregate findings across scans. Load a known scan ID to review its findings."
+                  action={<Link to="/findings" className="secondary-button">Review findings</Link>}
+                />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="Vulnerability Distribution" subtitle="Core AI security categories in current test set">
+              <div className="chart-wrap chart-wrap--pie">
+                <EmptyState
+                  title="Category totals unavailable"
+                  description="The backend does not expose cross-scan category statistics. Scan-specific results require a known scan ID."
+                  action={<Link to="/scans/history" className="secondary-button">Look up a scan</Link>}
+                />
+              </div>
+            </SectionCard>
+          </div>
+
+          <div className="two-column-grid">
+            <SectionCard title="Recent Scans" subtitle="Latest execution activity" className="table-card">
+              <EmptyState
+                title="The backend does not provide a scan list"
+                description="Enter a known scan ID to view its status, execution metrics, and results."
+                action={<Link to="/scans/history" className="secondary-button">Look up a scan</Link>}
+              />
+            </SectionCard>
+
+            <SectionCard title="Recent Findings" subtitle="Most recent vulnerability detections" className="findings-card">
+              <EmptyState
+                title="Findings require a scan ID"
+                description="The backend provides findings within scan results, but does not expose a global findings feed."
+                action={<Link to="/findings" className="secondary-button">Review findings</Link>}
+              />
+            </SectionCard>
+          </div>
         </>
       ) : null}
     </div>

@@ -28,10 +28,10 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Verify health at `http://127.0.0.1:8001/health`. FastAPI's generated OpenAPI and Swagger UI are available at `/openapi.json` and `/docs`.
+Verify health at `http://127.0.0.1:8000/health`. FastAPI's generated OpenAPI and Swagger UI are available at `/openapi.json` and `/docs`.
 
 In a second terminal:
 
@@ -71,7 +71,7 @@ Scan IDs and targets disappear when the backend process restarts because the bac
 
 ## Troubleshooting
 
-- **Backend unavailable / network error:** confirm the backend is listening on `127.0.0.1:8001`, then retry from the page.
+- **Backend unavailable / network error:** confirm the backend is listening on `127.0.0.1:8000`, then retry from the page.
 - **CORS error in a deployed frontend:** set up a same-origin reverse proxy or a backend CORS allowlist for the exact frontend origin. The local Vite proxy is development-only.
 - **404 for target or scan:** backend state is in-memory; the ID may be invalid or the backend may have restarted.
 - **Malformed response:** compare the endpoint's response with the generated OpenAPI schema at `/openapi.json`; the UI intentionally reports schema mismatches.

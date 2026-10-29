@@ -5,7 +5,7 @@ import { ApiError, apiBaseUrl, getHealth } from '../services/api';
 import type { ApiHealth } from '../types';
 
 function safeApiOrigin(value: string): string {
-  if (!value) return 'Local Vite proxy to 127.0.0.1:8001';
+  if (!value) return 'Local Vite proxy to 127.0.0.1:8000';
   try {
     return new URL(value).origin;
   } catch {
@@ -18,7 +18,7 @@ export function SettingsPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
-  const docsUrl = `${apiBaseUrl || 'http://127.0.0.1:8001'}/docs`;
+  const docsUrl = `${apiBaseUrl || 'http://127.0.0.1:8000'}/docs`;
 
   useEffect(() => {
     let active = true;
