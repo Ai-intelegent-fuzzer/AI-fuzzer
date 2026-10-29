@@ -1,11 +1,11 @@
-import type { Confidence } from '../../types';
-
-const confidenceMap: Record<Confidence, string> = {
-  High: 'confidence-badge confidence-badge--high',
-  Medium: 'confidence-badge confidence-badge--medium',
-  Low: 'confidence-badge confidence-badge--low',
+const confidenceClasses: Record<string, string> = {
+  high: 'confidence-badge confidence-badge--high',
+  medium: 'confidence-badge confidence-badge--medium',
+  low: 'confidence-badge confidence-badge--low',
 };
 
-export function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
-  return <span className={confidenceMap[confidence]}>{confidence}</span>;
+export function ConfidenceBadge({ confidence }: { confidence: string }) {
+  const normalized = confidence.toLowerCase();
+  const label = confidence ? confidence[0].toUpperCase() + confidence.slice(1) : 'Unknown';
+  return <span className={confidenceClasses[normalized] ?? 'confidence-badge'}>{label}</span>;
 }

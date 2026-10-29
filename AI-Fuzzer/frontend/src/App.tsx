@@ -15,23 +15,27 @@ import './App.css';
 const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/dashboard': {
     title: 'Dashboard',
-    subtitle: 'Monitor AI security scans, vulnerabilities, and testing activity.',
+    subtitle: 'Live backend health and registered target inventory.',
   },
   '/targets': {
     title: 'Targets',
-    subtitle: 'Authorized AI endpoints and risk posture overview.',
+    subtitle: 'Read-only view of targets registered in the backend.',
   },
   '/scans/new': {
     title: 'New Scan',
-    subtitle: 'Configure and initiate a new AI security assessment.',
+    subtitle: 'Scan initiation is not enabled in this read-only frontend integration.',
   },
   '/scans/history': {
     title: 'Scan History',
-    subtitle: 'Review prior security assessments and execution outcomes.',
+    subtitle: 'Look up scan details and results using a backend scan ID.',
+  },
+  '/scans/:scanId': {
+    title: 'Scan Details',
+    subtitle: 'Backend-reported scan status, metrics, and results.',
   },
   '/findings': {
     title: 'Findings',
-    subtitle: 'Evidence-backed vulnerability details and remediation guidance.',
+    subtitle: 'Analyzer findings and evidence from retrieved scan results.',
   },
   '/findings/:findingId': {
     title: 'Finding Detail',
@@ -63,11 +67,11 @@ function AppContent() {
         <Route path="/targets" element={<TargetsPage />} />
         <Route path="/scans/new" element={<NewScanPage />} />
         <Route path="/scans/history" element={<ScanHistoryPage />} />
-        <Route path="/scans/:scanId" element={<ScanDetailsPage />} />
+        <Route path="/scans/:scanId" element={<ScanDetailsPage key={location.pathname} />} />
         <Route path="/findings" element={<FindingsPage />} />
-        <Route path="/findings/:findingId" element={<FindingDetailPage />} />
+        <Route path="/findings/:findingId" element={<FindingDetailPage key={`${location.pathname}${location.search}`} />} />
         <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/reports/:reportId" element={<ReportDetailPage />} />
+        <Route path="/reports/:reportId" element={<ReportDetailPage key={location.pathname} />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

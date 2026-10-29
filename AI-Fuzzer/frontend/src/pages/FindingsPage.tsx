@@ -1,126 +1,149 @@
-import { AlertTriangle, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { AlertTriangle, Search } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { ConfidenceBadge } from '../components/common/ConfidenceBadge';
+import { EmptyState } from '../components/common/EmptyState';
 import { SectionCard } from '../components/common/SectionCard';
 import { SeverityBadge } from '../components/common/SeverityBadge';
-import { mockFindings } from '../data/mockData';
+import { ApiError, getScanResults } from '../services/api';
+import type { ApiFinding, ApiScanResult } from '../types';
+
+interface FindingRow {
+  finding: ApiFinding;
+  scanId: string;
+  targetId: string;
+  verdict: string;
+}
 
 export function FindingsPage() {
+  const [scanId, setScanId] = useState('');
+  const [loadedScanId, setLoadedScanId] = useState('');
+  const [results, setResults] = useState<ApiScanResult[]>([]);
   const [search, setSearch] = useState('');
-  const [severityFilter, setSeverityFilter] = useState('All');
-  const [confidenceFilter, setConfidenceFilter] = useState('All');
-  const [targetFilter, setTargetFilter] = useState('All');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const filteredFindings = useMemo(() => {
-    return mockFindings.filter((finding) => {
-      const matchesSearch = `${finding.vulnerabilityType} ${finding.targetName} ${finding.findingId}`
-        .toLowerCase()
-        .includes(search.toLowerCase());
-      const matchesSeverity = severityFilter === 'All' || finding.severity === severityFilter;
-      const matchesConfidence = confidenceFilter === 'All' || finding.confidence === confidenceFilter;
-      const matchesTarget = targetFilter === 'All' || finding.targetName === targetFilter;
-      return matchesSearch && matchesSeverity && matchesConfidence && matchesTarget;
-    });
-  }, [search, severityFilter, confidenceFilter, targetFilter]);
+  const loadFindings = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const value = scanId.trim();
+    if (!value) return;
+    setLoading(true);
+    setError('');
+    setResults([]);
+    setLoadedScanId('');
+    try {
+      setResults(await getScanResults(value));
+      setLoadedScanId(value);
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : 'Unable to load scan findings.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const targetOptions = Array.from(new Set(mockFindings.map((item) => item.targetName)));
-  const latestFinding = filteredFindings[0] ?? mockFindings[0];
+  const rows = useMemo<FindingRow[]>(() => results.flatMap((result) =>
+    result.analysis.findings.map((finding) => ({
+      finding,
+      scanId: loadedScanId,
+      targetId: result.analysis.target_id,
+      verdict: result.analysis.status,
+    })),
+  ).filter(({ finding }) =>
+    `${finding.title} ${finding.category} ${finding.finding_id}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
+  ), [loadedScanId, results, search]);
 
   return (
     <div className="content-stack">
-      <SectionCard title="Vulnerability Findings" subtitle="Observed issues with evidence and recommended remediation">
-        <div className="toolbar-row toolbar-row--filters">
-          <div className="search-box" aria-label="Search findings">
+      <SectionCard title="Findings" subtitle="Analyzer findings from actual scan-result records">
+        <form className="toolbar-row" onSubmit={loadFindings}>
+          <div className="search-box">
             <Search size={15} />
-            <input type="text" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter findings" aria-label="Filter findings" />
+            <input
+              type="text"
+              value={scanId}
+              onChange={(event) => setScanId(event.target.value)}
+              placeholder="Enter scan ID"
+              aria-label="Scan ID"
+              required
+            />
           </div>
-          <select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)} className="compact-select" aria-label="Filter by severity">
-            <option value="All">All severities</option>
-            <option value="Critical">Critical</option>
-            <option value="High">High</option>
-            <option value="Medium">Medium</option>
-            <option value="Low">Low</option>
-          </select>
-          <select value={confidenceFilter} onChange={(event) => setConfidenceFilter(event.target.value)} className="compact-select" aria-label="Filter by confidence">
-            <option value="All">All confidence</option>
-            <option value="High">High</option>
-            <option value="Medium">Medium</option>
-            <option value="Low">Low</option>
-          </select>
-          <select value={targetFilter} onChange={(event) => setTargetFilter(event.target.value)} className="compact-select" aria-label="Filter by target">
-            <option value="All">All targets</option>
-            {targetOptions.map((target) => (
-              <option key={target} value={target}>{target}</option>
-            ))}
-          </select>
-        </div>
+          <button type="submit" className="primary-button" disabled={loading}>
+            {loading ? 'Loading…' : 'Load findings'}
+          </button>
+          {loadedScanId ? (
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Filter loaded findings"
+              aria-label="Filter findings"
+            />
+          ) : null}
+        </form>
 
-        <div className="findings-table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Finding ID</th>
-                <th>Vulnerability</th>
-                <th>Severity</th>
-                <th>Confidence</th>
-                <th>Target</th>
-                <th>Test ID</th>
-                <th>Timestamp</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredFindings.map((finding) => (
-                <tr key={finding.findingId}>
-                  <td className="mono-text">
-                    <Link to={`/findings/${finding.findingId}`} className="inline-link">{finding.findingId}</Link>
-                  </td>
-                  <td>{finding.vulnerabilityType}</td>
-                  <td><SeverityBadge severity={finding.severity} /></td>
-                  <td><ConfidenceBadge confidence={finding.confidence} /></td>
-                  <td>{finding.targetName}</td>
-                  <td className="mono-text">{finding.testId}</td>
-                  <td>{new Date(finding.timestamp).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</td>
+        {error ? <div className="inline-message inline-message--error" role="alert">{error}</div> : null}
+        {loading ? <div className="page-loading">Loading scan results…</div> : null}
+
+        {!loading && loadedScanId && rows.length === 0 ? (
+          <EmptyState
+            title="No analyzer findings returned"
+            description="This scan returned no finding records, or no records match the filter. Execution errors are not counted as vulnerabilities."
+          />
+        ) : null}
+
+        {!loading && rows.length > 0 ? (
+          <div className="findings-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Finding ID</th>
+                  <th>Finding</th>
+                  <th>Severity</th>
+                  <th>Confidence</th>
+                  <th>Category</th>
+                  <th>Verdict</th>
+                  <th>Test ID</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {rows.map(({ finding, scanId: id, targetId, verdict }) => (
+                  <tr key={finding.finding_id}>
+                    <td className="mono-text">
+                      <Link
+                        to={`/findings/${encodeURIComponent(finding.finding_id)}?scanId=${encodeURIComponent(id)}`}
+                        className="inline-link"
+                        state={{ targetId, verdict }}
+                      >
+                        {finding.finding_id}
+                      </Link>
+                    </td>
+                    <td>{finding.title}</td>
+                    <td><SeverityBadge severity={finding.severity} /></td>
+                    <td><ConfidenceBadge confidence={finding.confidence} /></td>
+                    <td>{finding.category}</td>
+                    <td><span className="mono-text">{verdict.toUpperCase()}</span></td>
+                    <td className="mono-text">{finding.case_id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </SectionCard>
 
-      <SectionCard title="Latest evidence" subtitle="Detailed forensic review of the most recent run">
-        <div className="evidence-panel">
-          <div className="evidence-panel__header">
-            <div className="evidence-pill">
-              <AlertTriangle size={14} />
-              {latestFinding.severity}
-            </div>
-            <span className="mono-text">{latestFinding.findingId}</span>
+      {loadedScanId && results.some((result) => result.execution.status.toLowerCase() !== 'success') ? (
+        <SectionCard title="Execution status" subtitle="Provider/execution errors are not vulnerability findings">
+          <div className="detail-block">
+            <div className="detail-block__icon"><AlertTriangle size={16} /></div>
+            <p>
+              At least one result has a non-success execution status. Review the scan record for
+              execution messages; these failures are kept separate from analyzer findings.
+            </p>
           </div>
-          <h3>{latestFinding.vulnerabilityType}</h3>
-          <p>
-            {latestFinding.evidence}
-          </p>
-          <div className="evidence-grid">
-            <div>
-              <label>Expected behavior</label>
-              <p>{latestFinding.expectedBehavior}</p>
-            </div>
-            <div>
-              <label>Actual behavior</label>
-              <p>{latestFinding.actualBehavior}</p>
-            </div>
-            <div>
-              <label>Evidence</label>
-              <p>{latestFinding.evidence}</p>
-            </div>
-            <div>
-              <label>Recommendation</label>
-              <p>{latestFinding.recommendation}</p>
-            </div>
-          </div>
-        </div>
-      </SectionCard>
+        </SectionCard>
+      ) : null}
     </div>
   );
 }
