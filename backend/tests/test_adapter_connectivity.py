@@ -96,15 +96,11 @@ class ConnectivityTests(unittest.TestCase):
             endpoint="http://controlled.test/chat",
         )
         self.tester = ConnectivityTester()
-        self.real_client = httpx.Client
 
     def _client_patch(self, handler):
         return patch(
-            "app.connectivity.tester.httpx.Client",
-            side_effect=lambda **kwargs: self.real_client(
-                transport=httpx.MockTransport(handler),
-                **kwargs,
-            ),
+            "app.connectivity.tester.PinnedHTTPTransport",
+            return_value=httpx.MockTransport(handler),
         )
 
     def test_test_reports_reachable_response(self) -> None:

@@ -1,6 +1,12 @@
 from uuid import NAMESPACE_URL, uuid5
 
-from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
+from app.analysis.models import (
+    AnalysisOutcome,
+    AnalysisResult,
+    AnalysisStatus,
+    Finding,
+    Severity,
+)
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
 from app.execution.models import ExecutionResult
 from app.fuzzing.models import FuzzCase
@@ -43,6 +49,14 @@ class ResponseAnalyzer:
             if execution_completed and assessment is not None
             else False
         )
+        if execution_completed and assessment is not None:
+            outcome = assessment.outcome
+        elif execution.status == "blocked":
+            outcome = AnalysisOutcome.REFUSED_OR_BLOCKED
+        elif execution_completed:
+            outcome = AnalysisOutcome.INCONCLUSIVE
+        else:
+            outcome = AnalysisOutcome.EXECUTION_FAILED
         indicators = assessment.indicators if assessment is not None else []
         attack_id = (attack_metadata or {}).get("attack_id")
         attack_name = (attack_metadata or {}).get("attack_name")
@@ -171,6 +185,7 @@ class ResponseAnalyzer:
             category=category,
             vulnerable=vulnerable,
             status=status,
+            outcome=outcome,
             findings=findings,
             attack_id=str(attack_id) if attack_id else None,
             expected_behavior=expected_behavior,

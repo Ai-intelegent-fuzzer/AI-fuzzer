@@ -152,7 +152,7 @@ class AdapterPromptApiTests(unittest.TestCase):
 
     @patch("app.api.adapter.target_manager.get")
     def test_unsupported_target_type_returns_validation_error(self, get_target) -> None:
-        self.target.target_type = "chatbot"
+        self.target.target_type = "unsupported"
         get_target.return_value = self.target
 
         with self.assertRaises(HTTPException) as caught:

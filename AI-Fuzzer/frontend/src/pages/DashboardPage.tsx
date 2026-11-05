@@ -13,12 +13,8 @@ import { SectionCard } from '../components/common/SectionCard';
 import { SeverityBadge } from '../components/common/SeverityBadge';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { ConfidenceBadge } from '../components/common/ConfidenceBadge';
-import { mockAppService } from '../services/mockApi';
-import {
-  severityDistribution,
-  vulnerabilityDistribution,
-} from '../data/mockData';
-import type { DashboardSummary, Finding, Scan, SystemHealthState } from '../types';
+import { apiClient } from '../services/api';
+import type { DashboardSummary, Finding, Scan, SystemHealthState, Target } from '../types';
 
 const pieColors = ['#5bc0ff', '#7dd3fc', '#fbbf24', '#f97316'];
 
@@ -27,23 +23,50 @@ export function DashboardPage() {
   const [scans, setScans] = useState<Scan[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [health, setHealth] = useState<SystemHealthState | null>(null);
+  const [targets, setTargets] = useState<Target[]>([]);
+  const [severityDistribution, setSeverityDistribution] = useState<Array<{ name: string; value: number }>>([]);
+  const [vulnerabilityDistribution, setVulnerabilityDistribution] = useState<Array<{ name: string; value: number }>>([]);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const providerOverview = targets.reduce<Record<string, { total: number; connected: number }>>((counts, target) => {
+    const provider = target.provider ?? 'openai';
+    const entry = counts[provider] ?? { total: 0, connected: 0 };
+    entry.total += 1;
+    if (target.status === 'Operational') entry.connected += 1;
+    counts[provider] = entry;
+    return counts;
+  }, {});
 
   useEffect(() => {
+    let active = true;
     Promise.all([
-      mockAppService.getDashboardSummary(),
-      mockAppService.getScans(),
-      mockAppService.getFindings(),
-      mockAppService.getSystemHealth(),
-    ]).then(([metrics, scanData, findingData, healthData]) => {
+      apiClient.getDashboardSummary(),
+      apiClient.getScans(),
+      apiClient.getFindings(),
+      apiClient.getSystemHealth(),
+      apiClient.getTargets(),
+      apiClient.getSeverityDistribution(),
+      apiClient.getCategoryDistribution(),
+    ]).then(([metrics, scanData, findingData, healthData, targetData, severityData, categoryData]) => {
+      if (!active) return;
       setSummary(metrics);
       setScans(scanData);
       setFindings(findingData);
       setHealth(healthData);
-    });
+      setTargets(targetData);
+      setSeverityDistribution(severityData);
+      setVulnerabilityDistribution(categoryData);
+    }).catch((cause: unknown) => {
+      if (active) setError(cause instanceof Error ? cause.message : 'Unable to load dashboard data.');
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, []);
 
-  if (!summary || !health) {
+  if (loading) {
     return <div className="page-loading">Loading dashboard…</div>;
+  }
+  if (error || !summary || !health) {
+    return <div className="inline-message inline-message--error" role="alert">{error || 'Dashboard data is unavailable.'}</div>;
   }
 
   return (
@@ -64,7 +87,7 @@ export function DashboardPage() {
           icon={<ShieldCheck size={18} />}
           label="Total Scans"
           value={String(summary.totalScans)}
-          detail="Across 4 active targets"
+          detail={`${scans.filter((scan) => scan.status === 'Completed').length} completed · ${scans.filter((scan) => scan.status === 'Failed').length} failed`}
           tone="default"
         />
         <MetricCard
@@ -78,7 +101,7 @@ export function DashboardPage() {
           icon={<AlertTriangle size={18} />}
           label="Vulnerabilities Found"
           value={String(summary.vulnerabilitiesFound)}
-          detail="High confidence findings"
+          detail="Analyzer findings returned by scans"
           tone="warning"
         />
         <MetricCard
@@ -109,9 +132,24 @@ export function DashboardPage() {
         </div>
       </div>
 
+      <SectionCard title="Provider overview" subtitle="Configured endpoints and their latest persisted connectivity checks">
+        {!Object.keys(providerOverview).length ? (
+          <p className="empty-copy">No provider targets are configured.</p>
+        ) : (
+          <div className="distribution-list">
+            {Object.entries(providerOverview).sort(([left], [right]) => left.localeCompare(right)).map(([provider, counts]) => (
+              <div key={provider} className="distribution-item">
+                <span>{provider}</span>
+                <strong>{counts.connected}/{counts.total} connected</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </SectionCard>
+
       <div className="chart-grid">
         <SectionCard title="Severity Distribution" subtitle="Detected risk mix across completed scans">
-          <div className="chart-wrap chart-wrap--bar">
+          {severityDistribution.every((entry) => entry.value === 0) ? <p className="empty-copy">No severity data from scans yet.</p> : <div className="chart-wrap chart-wrap--bar">
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={severityDistribution} margin={{ top: 12, right: 8, left: -18, bottom: 6 }}>
                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#a8b3c7', fontSize: 12 }} />
@@ -134,11 +172,11 @@ export function DashboardPage() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </div>}
         </SectionCard>
 
         <SectionCard title="Vulnerability Distribution" subtitle="Core AI security categories in current test set">
-          <div className="chart-wrap chart-wrap--pie">
+          {!vulnerabilityDistribution.length ? <p className="empty-copy">No category findings from scans yet.</p> : <div className="chart-wrap chart-wrap--pie">
             <ResponsiveContainer width="100%" height={250}>
               <PieChart>
                 <Pie
@@ -172,7 +210,7 @@ export function DashboardPage() {
                 </div>
               ))}
             </div>
-          </div>
+          </div>}
         </SectionCard>
       </div>
 
@@ -205,6 +243,7 @@ export function DashboardPage() {
                     <td>{scan.duration}</td>
                   </tr>
                 ))}
+                {!scans.length ? <tr><td colSpan={7}>No scans have been recorded.</td></tr> : null}
               </tbody>
             </table>
           </div>
@@ -228,6 +267,7 @@ export function DashboardPage() {
                 <div className="finding-item__time">{new Date(finding.timestamp).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</div>
               </Link>
             ))}
+            {!findings.length ? <p className="empty-copy">No findings have been reported.</p> : null}
           </div>
         </SectionCard>
       </div>

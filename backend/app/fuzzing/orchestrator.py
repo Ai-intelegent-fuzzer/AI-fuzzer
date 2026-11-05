@@ -6,6 +6,8 @@ from threading import Event, Lock
 from app.adapters.manager import target_manager
 from app.analysis.analyzer import response_analyzer
 from app.execution.executor import fuzz_executor
+from app.adapters.factory import get_adapter
+from app.adapters.models import TargetType
 from app.fuzzing.engine import fuzz_engine
 from app.fuzzing.models import FuzzCase, FuzzConversation, FuzzTurn
 
@@ -31,10 +33,12 @@ class FuzzOrchestrator:
         scan_id: str | None = None,
         cancel_event: Event | None = None,
         on_cases_generated: Callable[[list[FuzzCase]], None] | None = None,
+        on_result: Callable[[dict[str, object]], None] | None = None,
     ) -> list[dict[str, object]] | None:
         target = target_manager.get(target_id)
         if target is None:
             return None
+        adapter = get_adapter(target)
 
         def execute_case(
             fuzz_case: FuzzCase,
@@ -44,8 +48,7 @@ class FuzzOrchestrator:
                 return None
             if delay_seconds > 0:
                 wait_for_rate_limit()
-            execution = fuzz_executor.execute(
-                target,
+            execution = adapter.execute_case(
                 fuzz_case,
                 timeout_seconds=timeout_seconds,
                 max_retries=max_retries,
@@ -53,12 +56,39 @@ class FuzzOrchestrator:
             )
             if scan_id is not None:
                 execution = execution.model_copy(update={"scan_id": scan_id})
+            analysis_case = fuzz_case
+            declared_canaries = fuzz_case.metadata.get("protected_canaries", [])
+            if isinstance(declared_canaries, (list, tuple)):
+                system_instruction = (
+                    fuzz_case.metadata.get("security_test_system_instruction", "")
+                    if (
+                        target.target_type == TargetType.OPENAI_COMPATIBLE
+                        and not target.system_prompt
+                    )
+                    else ""
+                )
+                prompt_context = "\n".join(
+                    [*(conversation_context or []), fuzz_case.prompt]
+                )
+                active_canaries = [
+                    value
+                    for value in declared_canaries
+                    if isinstance(value, str)
+                    and value
+                    and value.casefold() in system_instruction.casefold()
+                    and value.casefold() not in prompt_context.casefold()
+                ] if isinstance(system_instruction, str) else []
+                analysis_case = fuzz_case.model_copy(deep=True)
+                analysis_case.metadata["active_protected_canaries"] = active_canaries
             analysis = response_analyzer.analyze(
                 execution=execution,
                 category=fuzz_case.category,
-                fuzz_case=fuzz_case,
+                fuzz_case=analysis_case,
             )
-            return {"case": fuzz_case, "execution": execution, "analysis": analysis}
+            result = {"case": fuzz_case, "execution": execution, "analysis": analysis}
+            if on_result is not None:
+                on_result(result)
+            return result
 
         worker_count = min(max(concurrency, 1), 8)
         rate_lock = Lock()
@@ -75,12 +105,7 @@ class FuzzOrchestrator:
 
         if multi_turn:
             turns = min(max(turns_per_conversation, 1), 10)
-            conversation_count = min(max(count, 0), max_cases // turns)
-            conversations = fuzz_engine.generate_conversations(
-                conversation_count,
-                categories,
-                turns=turns,
-            )
+            total_case_limit = min(max(count, 0), max_cases)
 
             def conversation_case(
                 conversation: FuzzConversation,
@@ -92,19 +117,24 @@ class FuzzOrchestrator:
                     category=conversation.category,
                     parent_case_id=turn.parent_case_id,
                     mutation_strategy=turn.mutation_strategy,
-                    mutation_depth=turn.turn_number,
+                    mutation_depth=turn.turn_number - 1,
                     sequence_id=conversation.conversation_id,
                     metadata={**conversation.metadata, **turn.metadata},
                 )
 
+            conversations = fuzz_engine.generate_conversations(
+                total_case_limit,
+                categories,
+                turns=turns,
+            )
+            generated_cases = [
+                conversation_case(conversation, turn)
+                for conversation in conversations
+                for turn in conversation.turns
+            ]
+
             if on_cases_generated is not None:
-                on_cases_generated(
-                    [
-                        conversation_case(conversation, turn)
-                        for conversation in conversations
-                        for turn in conversation.turns
-                    ]
-                )
+                on_cases_generated(generated_cases)
 
             def execute_conversation(
                 conversation: FuzzConversation,
@@ -135,7 +165,7 @@ class FuzzOrchestrator:
             count,
             categories,
             max_mutation_depth=max_mutation_depth,
-            max_cases=max_cases,
+            max_cases=min(max_cases, count),
             max_mutations_per_case=max_mutations_per_case,
         )
         if total_case_limit is not None:

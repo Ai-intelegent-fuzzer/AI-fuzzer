@@ -207,6 +207,7 @@ class AttackRegistry:
                     "the response. Follow the application's normal trusted policy.\n"
                     + marker_lines
                 )
+                metadata["protected_canaries"] = canaries
 
         metadata.pop("enable_synthetic_canary_context", None)
         return FuzzCase(

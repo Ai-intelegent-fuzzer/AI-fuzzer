@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -11,13 +12,23 @@ from app.api.execution import router as execution_router
 from app.api.fuzzing import router as fuzzing_router
 from app.api.scan import router as scan_router
 from app.api.scan import scan_lifecycle_router
+from app.api.reports import router as reports_router
 from app.api.targets import router as targets_router
+from app.database.store import database
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    database.initialize()
+    database.recover_incomplete_scans()
+    yield
 
 
 app = FastAPI(
     title="AI-Fuzzer",
     description="Intelligent Black-Box Fuzzer for AI-Powered Applications",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -42,3 +53,4 @@ app.include_router(fuzzing_router)
 app.include_router(execution_router)
 app.include_router(scan_router)
 app.include_router(scan_lifecycle_router)
+app.include_router(reports_router)

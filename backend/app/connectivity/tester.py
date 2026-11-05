@@ -4,6 +4,7 @@ import time
 import httpx
 
 from app.adapters.endpoint_policy import (
+    PinnedHTTPTransport,
     UnsafeTargetEndpointError,
     validate_target_endpoint,
 )
@@ -58,18 +59,26 @@ class ConnectivityTester:
             )
 
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(
+            transport = PinnedHTTPTransport()
+            with httpx.Client(
+                timeout=10.0,
+                transport=transport,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                with client.stream(
+                    "GET",
                     str(target.endpoint),
                     follow_redirects=False,
-                )
+                ) as response:
+                    status_code = response.status_code
 
             elapsed = (time.perf_counter() - start) * 1000
 
             return ConnectivityResult(
                 target_id=target.target_id,
                 status=ConnectivityStatus.REACHABLE,
-                status_code=response.status_code,
+                status_code=status_code,
                 response_time_ms=round(elapsed, 2),
                 message="Target endpoint is reachable.",
             )

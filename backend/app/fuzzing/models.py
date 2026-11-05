@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class FuzzCase(BaseModel):
@@ -44,10 +44,11 @@ class ScanStatus(str, Enum):
 
 class ScanCreateRequest(BaseModel):
     target_id: str
+    authorization_confirmed: bool = False
     count: int = Field(default=10, ge=1, le=100)
     categories: list[str] | None = None
-    max_mutation_depth: int = Field(default=1, ge=0, le=5)
-    max_mutations_per_case: int = Field(default=10, ge=0, le=10)
+    max_mutation_depth: int = Field(default=0, ge=0, le=5)
+    max_mutations_per_case: int = Field(default=0, ge=0, le=10)
     timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     max_retries: int = Field(default=0, ge=0, le=5)
     concurrency: int = Field(default=1, ge=1, le=8)
@@ -55,6 +56,19 @@ class ScanCreateRequest(BaseModel):
     execution_order: Literal["generated", "reverse", "category"] = "generated"
     multi_turn: bool = False
     turns_per_conversation: int = Field(default=3, ge=1, le=10)
+
+    @field_validator("categories")
+    @classmethod
+    def validate_categories(cls, categories: list[str] | None) -> list[str] | None:
+        if categories is None:
+            return None
+        if not categories:
+            raise ValueError("Select at least one test category.")
+        if any(not category.strip() for category in categories):
+            raise ValueError("Test categories must not be empty.")
+        if len(set(categories)) != len(categories):
+            raise ValueError("Test categories must not contain duplicates.")
+        return categories
 
 
 class ScanMetrics(BaseModel):
@@ -84,6 +98,10 @@ class ScanMetrics(BaseModel):
 
 
 class FuzzingCoverage(BaseModel):
+    requested_categories: list[str] = Field(default_factory=list)
+    generated_categories: list[str] = Field(default_factory=list)
+    executed_categories: list[str] = Field(default_factory=list)
+    category_coverage_percent: float = 0.0
     categories_tested: list[str] = Field(default_factory=list)
     mutation_strategies_tested: list[str] = Field(default_factory=list)
     mutation_depths: list[int] = Field(default_factory=list)
@@ -100,6 +118,11 @@ class ScanRecord(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     requested_case_count: int
+    requested_categories: list[str] = Field(default_factory=list)
+    generated_categories: list[str] = Field(default_factory=list)
+    executed_categories: list[str] = Field(default_factory=list)
+    category_coverage_percent: float = 0.0
+    coverage_warning: str | None = None
     generated_case_count: int = 0
     executed_case_count: int = 0
     finding_count: int = 0

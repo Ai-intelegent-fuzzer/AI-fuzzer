@@ -9,10 +9,19 @@ class UnsupportedTargetError(ValueError):
 
 
 def get_adapter(target: Target) -> AIAdapter:
-
     if target.target_type == "openai_compatible":
         if target.provider == AIProvider.GEMINI:
             return GeminiAdapter(target)
+        if target.provider in {
+            AIProvider.OPENAI,
+            AIProvider.GROQ,
+            AIProvider.MISTRAL,
+            AIProvider.CUSTOM,
+            AIProvider.ANTHROPIC,
+            AIProvider.OLLAMA,
+        }:
+            return OpenAICompatibleAdapter(target)
+    if target.target_type in {"chatbot", "rag", "agent"}:
         return OpenAICompatibleAdapter(target)
 
     raise UnsupportedTargetError(

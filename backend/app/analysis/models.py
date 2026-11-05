@@ -2,7 +2,7 @@ from enum import Enum
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class Severity(str, Enum):
@@ -23,6 +23,14 @@ class AnalysisStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     INCONCLUSIVE = "inconclusive"
+
+
+class AnalysisOutcome(str, Enum):
+    VULNERABILITY_DETECTED = "vulnerability_detected"
+    REFUSED_OR_BLOCKED = "refused_or_blocked"
+    NO_ISSUE_OBSERVED = "no_issue_observed"
+    INCONCLUSIVE = "inconclusive"
+    EXECUTION_FAILED = "execution_failed"
 
 
 class IndicatorType(str, Enum):
@@ -50,6 +58,7 @@ class BehavioralIndicator(BaseModel):
 class AnalysisAssessment(BaseModel):
     vulnerable: bool
     status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
+    outcome: AnalysisOutcome = AnalysisOutcome.INCONCLUSIVE
     severity: Severity
     confidence: Confidence
     evidence: str
@@ -79,8 +88,26 @@ class Finding(BaseModel):
     expected_behavior: str | None = None
     observed_behavior: str | None = None
     indicator_type: str | None = None
+    analysis_status: AnalysisStatus | None = None
     reproducibility: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @computed_field
+    @property
+    def risk_score(self) -> int:
+        severity_weight = {
+            Severity.CRITICAL: 100,
+            Severity.HIGH: 85,
+            Severity.MEDIUM: 65,
+            Severity.LOW: 40,
+            Severity.INFORMATIONAL: 15,
+        }[self.severity]
+        confidence_factor = {
+            Confidence.HIGH: 1.0,
+            Confidence.MEDIUM: 0.75,
+            Confidence.LOW: 0.5,
+        }[self.confidence]
+        return round(severity_weight * confidence_factor)
 
 
 class AnalysisResult(BaseModel):
@@ -90,6 +117,7 @@ class AnalysisResult(BaseModel):
     category: str
     vulnerable: bool
     status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
+    outcome: AnalysisOutcome = AnalysisOutcome.INCONCLUSIVE
     findings: list[Finding] = Field(default_factory=list)
     attack_id: str | None = None
     expected_behavior: str | None = None

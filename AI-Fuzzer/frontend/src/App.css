@@ -701,6 +701,12 @@ tbody tr:hover {
   color: #fecaca;
 }
 
+.inline-message--warning {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  color: #fde68a;
+}
+
 .icon-button {
   width: 38px;
   height: 38px;
@@ -1069,6 +1075,11 @@ tbody tr:hover {
 }
 
 @media print {
+  @page {
+    size: A4;
+    margin: 16mm;
+  }
+
   .sidebar,
   .notification-btn,
   .status-chip,
@@ -1102,6 +1113,36 @@ tbody tr:hover {
 
   .app-main {
     padding: 0 !important;
+  }
+
+  .topbar,
+  .report-cover {
+    break-after: page;
+  }
+
+  .report-finding-card,
+  .section-card,
+  .report-cover {
+    break-inside: avoid;
+  }
+
+  .detail-header,
+  .section-card *,
+  .report-cover * {
+    color: #101828 !important;
+  }
+
+  .code-block {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+    border: 1px solid #d0d7e2 !important;
+    background: #f8fafc !important;
+    color: #101828 !important;
+  }
+
+  a {
+    color: #101828 !important;
+    text-decoration: none !important;
   }
 
   .page-content {
