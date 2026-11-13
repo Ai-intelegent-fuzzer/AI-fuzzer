@@ -55,7 +55,7 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(len({item.prompt for item in mutations}), 10)
         self.assertEqual(
             {item.mutation_strategy for item in mutations},
-            {strategy.name for strategy in prompt_mutator.strategies},
+            {strategy.name for strategy in prompt_mutator.strategies[:10]},
         )
 
     def test_engine_category_and_depth_limits(self) -> None:
@@ -900,15 +900,23 @@ class ApiCompatibilityTests(unittest.TestCase):
                     findings=[scan_finding],
                     indicators=[scan_indicator],
                 )
+                def run_controlled_scan(**kwargs: object) -> list[dict[str, object]]:
+                    on_cases_generated = kwargs.get("on_cases_generated")
+                    if callable(on_cases_generated):
+                        on_cases_generated([scan_case])
+                    result = {
+                        "case": scan_case,
+                        "execution": scan_execution,
+                        "analysis": scan_analysis,
+                    }
+                    on_result = kwargs.get("on_result")
+                    if callable(on_result):
+                        on_result(result)
+                    return [result]
+
                 with patch(
                     "app.fuzzing.scheduler.fuzz_orchestrator.run",
-                    return_value=[
-                        {
-                            "case": scan_case,
-                            "execution": scan_execution,
-                            "analysis": scan_analysis,
-                        }
-                    ],
+                    side_effect=run_controlled_scan,
                 ):
                     started = await client.post(
                         "/scans",

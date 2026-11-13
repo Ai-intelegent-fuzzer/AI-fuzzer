@@ -41,7 +41,22 @@ describe('NewScanPage workflow', () => {
   it('requires a connectivity check and authorization, then navigates using the returned scan ID', async () => {
     const user = userEvent.setup();
     vi.spyOn(apiClient, 'getTargets').mockResolvedValue([target]);
-    vi.spyOn(apiClient, 'getScanCategories').mockResolvedValue(['prompt_injection', 'jailbreak']);
+    vi.spyOn(apiClient, 'getAttackCategories').mockResolvedValue([
+      {
+        category: 'prompt_injection',
+        attack_count: 2,
+        required_capabilities: [],
+        applicable_target_scopes: ['ai_application'],
+        applicable: true,
+      },
+      {
+        category: 'jailbreak',
+        attack_count: 2,
+        required_capabilities: [],
+        applicable_target_scopes: ['ai_application'],
+        applicable: true,
+      },
+    ]);
     vi.spyOn(apiClient, 'testTargetConnection').mockResolvedValue({
       status: 'Connection Successful',
       message: 'Controlled target is reachable.',

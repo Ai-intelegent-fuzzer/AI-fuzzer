@@ -1,8 +1,11 @@
 import logging
 import os
+import random
+import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from email.utils import parsedate_to_datetime
 
 import httpx
 from dotenv import load_dotenv
@@ -26,6 +29,7 @@ class FuzzExecutor:
     MAX_RETRIES = 5
     MAX_RESPONSE_SIZE = 10000
     MAX_PROVIDER_BODY_SIZE = 1_000_000
+    MAX_BACKOFF_SECONDS = 60.0
 
     def execute(
         self,
@@ -315,6 +319,7 @@ class FuzzExecutor:
             }
 
         for attempt in range(retries + 1):
+            response: httpx.Response | None = None
             try:
                 response = bounded_post(
                     endpoint,
@@ -596,8 +601,12 @@ class FuzzExecutor:
                 )
                 last_status_code = response.status_code
                 if response.status_code >= 500 and attempt < retries:
+                    self._sleep_before_retry(response, attempt)
                     continue
                 if response.status_code == 429:
+                    if attempt < retries:
+                        self._sleep_before_retry(response, attempt)
+                        continue
                     return result(
                         status="rate_limited",
                         status_code=429,
@@ -618,7 +627,11 @@ class FuzzExecutor:
                         status="target_error",
                         status_code=response.status_code,
                         message=f"Provider returned HTTP {response.status_code}. Check endpoint, model access, and request settings.",
-                        failure_reason="provider_request_rejected",
+                        failure_reason=(
+                            "provider_server_error"
+                            if response.status_code >= 500
+                            else "provider_request_rejected"
+                        ),
                         attempts=attempt + 1,
                     )
                 try:
@@ -654,6 +667,9 @@ class FuzzExecutor:
                     if not isinstance(content, str):
                         raise ValueError("Unexpected message content")
                 except (ValueError, KeyError, IndexError, TypeError):
+                    if attempt < retries:
+                        self._sleep_before_retry(response, attempt)
+                        continue
                     return result(
                         status="invalid_response",
                         status_code=response.status_code,
@@ -662,6 +678,9 @@ class FuzzExecutor:
                         attempts=attempt + 1,
                     )
                 if not content.strip():
+                    if attempt < retries:
+                        self._sleep_before_retry(response, attempt)
+                        continue
                     return result(
                         status="invalid_response",
                         status_code=response.status_code,
@@ -691,13 +710,14 @@ class FuzzExecutor:
                 )
             except ResponseTooLargeError:
                 return result(
-                    "invalid_response",
-                    "Provider response exceeded the configured safety limit.",
+                    status="invalid_response",
+                    message="Provider response exceeded the configured safety limit.",
                     failure_reason="provider_response_too_large",
                     attempts=attempt + 1,
                 )
             except httpx.TimeoutException:
                 if attempt < retries:
+                    self._sleep_before_retry(response, attempt)
                     continue
                 return result(
                     status="timeout",
@@ -707,6 +727,7 @@ class FuzzExecutor:
                 )
             except httpx.HTTPError:
                 if attempt < retries:
+                    self._sleep_before_retry(response, attempt)
                     continue
                 return result(
                     status="network_error",
@@ -723,8 +744,51 @@ class FuzzExecutor:
             attempts=retries + 1,
         )
 
+    def _sleep_before_retry(self, response: httpx.Response | None, attempt: int) -> None:
+        """Honor Groq retry-after/reset headers, then use capped jittered backoff."""
+        retry_after = self._retry_after_seconds(response) if response is not None else None
+        if retry_after is None:
+            retry_after = min(2 ** attempt, self.MAX_BACKOFF_SECONDS)
+            retry_after += random.uniform(0, min(1.0, retry_after / 4))
+        time.sleep(min(max(retry_after, 0.0), self.MAX_BACKOFF_SECONDS))
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float | None:
+        value = response.headers.get("retry-after")
+        if value:
+            try:
+                return max(float(value), 0.0)
+            except ValueError:
+                try:
+                    return max(
+                        (parsedate_to_datetime(value).timestamp() - time.time()),
+                        0.0,
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        for header in ("x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"):
+            value = response.headers.get(header)
+            if not value:
+                continue
+            match = re.fullmatch(
+                r"\s*(?:(?P<minutes>[0-9.]+)m)?\s*(?:(?P<seconds>[0-9.]+)s)?\s*",
+                value,
+                re.IGNORECASE,
+            )
+            if match and (match.group("minutes") or match.group("seconds")):
+                return float(match.group("minutes") or 0) * 60 + float(match.group("seconds") or 0)
+            try:
+                return max(float(value), 0.0)
+            except ValueError:
+                continue
+        return None
+
     @staticmethod
     def _api_key(target: Target, environment_name: str) -> str:
+        # Groq credentials are intentionally sourced only from backend/.env or
+        # the backend process environment; never from a frontend-supplied target.
+        if target.provider == AIProvider.GROQ:
+            return os.getenv("GROQ_API_KEY", "").strip()
         if target.api_key:
             return target.api_key.get_secret_value()
         return os.getenv(environment_name, "").strip()

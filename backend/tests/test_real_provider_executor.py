@@ -132,6 +132,49 @@ class RealProviderExecutorTests(unittest.TestCase):
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
     @patch("app.execution.executor.bounded_post")
+    def test_provider_500_is_a_retryable_provider_error(self, post) -> None:
+        post.return_value = httpx.Response(500, json={"error": {"message": "upstream"}})
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+        self.assertEqual(result.status, "target_error")
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(result.failure_reason, "provider_server_error")
+        self.assertIsNone(result.response_body)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.time.sleep")
+    @patch("app.execution.executor.bounded_post")
+    def test_rate_limit_retry_honors_retry_after_without_exposing_headers(
+        self, post, sleep
+    ) -> None:
+        post.side_effect = [
+            httpx.Response(429, headers={"retry-after": "0"}, json={"error": {}}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]}),
+        ]
+
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.attempts, 2)
+        sleep.assert_called_once_with(0.0)
+        self.assertNotIn("retry-after", result.message.lower())
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.time.sleep")
+    @patch("app.execution.executor.bounded_post")
+    def test_malformed_response_is_retried_then_parsed(self, post, sleep) -> None:
+        post.side_effect = [
+            httpx.Response(200, json={"unexpected": "format"}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]}),
+        ]
+
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.attempts, 2)
+        sleep.assert_called_once()
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
     def test_authentication_failure_does_not_expose_provider_body(self, post) -> None:
         post.return_value = httpx.Response(401, text="credential detail")
         result = FuzzExecutor().execute(self.target, self.case)

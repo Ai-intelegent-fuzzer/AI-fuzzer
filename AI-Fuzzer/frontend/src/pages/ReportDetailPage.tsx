@@ -30,6 +30,8 @@ function downloadReport(report: Report, format: 'html' | 'json') {
       <p>Requested: ${escapeHtml((report.categoriesRequested ?? []).join(', ') || 'Not recorded.')}</p>
       <p>Generated: ${escapeHtml((report.categoriesGenerated ?? []).join(', ') || 'None.')}</p>
       <p>Executed: ${escapeHtml((report.categoriesExecuted ?? []).join(', ') || 'None.')}</p>
+      <p>Not applicable: ${escapeHtml((report.categoriesNotApplicable ?? []).join(', ') || 'None.')}</p>
+      <p>Target scope: ${escapeHtml(report.targetScope ?? 'unknown')}</p>
       <p>Category coverage: ${report.categoryCoveragePercent ?? 0}%</p></section>
       <section><h2>Assessment statistics</h2><p>Status: ${escapeHtml(report.scanStatus ?? 'unknown')} · Requested: ${report.requestedCases ?? 0}
       · Generated: ${report.generatedCases ?? 0} · Executed: ${report.testsExecuted ?? 0} · Failed: ${report.failedExecutions ?? 0}
@@ -116,6 +118,7 @@ export function ReportDetailPage() {
           <div><p className="muted-label">Target</p><strong>{report.targetName}</strong></div>
           <div><p className="muted-label">Generated</p><span>{new Date(report.generatedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</span></div>
           <div><p className="muted-label">Highest severity</p><span>{report.highestSeverity ?? 'None recorded'}</span></div>
+          <div><p className="muted-label">Target scope</p><span>{report.targetScope?.replace(/_/g, ' ') ?? 'Unknown'}</span></div>
           {report.scanId ? <div><p className="muted-label">Source scan</p><Link to={`/scans/${report.scanId}`} className="inline-link mono-text">{report.scanId}</Link></div> : null}
         </div>
       </section>
@@ -127,6 +130,9 @@ export function ReportDetailPage() {
         <p><strong>Categories requested:</strong> {report.categoriesRequested?.join(', ') || 'Not recorded.'}</p>
         <p><strong>Categories generated:</strong> {report.categoriesGenerated?.join(', ') || 'None.'}</p>
         <p><strong>Categories executed:</strong> {report.categoriesExecuted?.join(', ') || 'None.'}</p>
+        <p><strong>Categories applicable:</strong> {report.categoriesApplicable?.join(', ') || 'None.'}</p>
+        <p><strong>Categories not applicable:</strong> {report.categoriesNotApplicable?.join(', ') || 'None.'}</p>
+        <p><strong>Target scope:</strong> {report.targetScope?.replace(/_/g, ' ') ?? 'Unknown'}</p>
         <p><strong>Category coverage:</strong> {report.categoryCoveragePercent ?? 0}%</p>
         {report.coverageWarning ? <div className="inline-message inline-message--warning" role="status">{report.coverageWarning}</div> : null}
       </section>
@@ -152,6 +158,8 @@ export function ReportDetailPage() {
           <div className="detail-list">
             <div><span>Tests executed</span><strong>{report.testsExecuted ?? 0}</strong></div>
             <div><span>Findings</span><strong>{report.findingsCount}</strong></div>
+            <div><span>Confirmed findings</span><strong>{report.findingsByVerificationStatus?.confirmed ?? 0}</strong></div>
+            <div><span>Likely / potential</span><strong>{report.findingsByVerificationStatus?.likely ?? 0} / {report.findingsByVerificationStatus?.potential ?? 0}</strong></div>
             <div><span>Requested / generated</span><strong>{report.requestedCases ?? 0} / {report.generatedCases ?? 0}</strong></div>
             <div><span>Failed executions</span><strong>{report.failedExecutions ?? 0}</strong></div>
             <div><span>Inconclusive analyses</span><strong>{report.inconclusiveAnalyses ?? 0}</strong></div>
@@ -183,10 +191,15 @@ export function ReportDetailPage() {
                   </div>
                   <h3>{finding.type}</h3>
                   <p>{finding.description}</p>
+                  <p><strong>Verification:</strong> {finding.verificationStatus?.replace(/_/g, ' ') ?? 'potential'}</p>
                   <p><strong>Category:</strong> {finding.category ?? 'Unknown'} · <strong>Confidence:</strong> {finding.confidence ?? 'Unknown'} · <strong>Risk score:</strong> {finding.riskScore ?? 'Not calculated'}/100</p>
                   <p><strong>Provider / model:</strong> {finding.provider ?? report.targetProvider ?? 'Unknown'} / {finding.model ?? report.targetModel ?? 'Unknown'}</p>
                   {finding.testCaseId ? <p><strong>Test case:</strong> <span className="mono-text">{finding.testCaseId}</span></p> : null}
                   {finding.attackId ? <p><strong>Attack ID:</strong> {finding.attackId}</p> : null}
+                  {finding.reproductionReference ? <p><strong>Reproduction reference:</strong> <span className="mono-text">{finding.reproductionReference}</span></p> : null}
+                  {finding.evidenceProvenance?.length ? (
+                    <p><strong>Evidence provenance:</strong> {finding.evidenceProvenance.map((item) => `${item.verification_level} (${item.provenance_id})`).join('; ')}</p>
+                  ) : null}
                   <pre className="code-block">{finding.evidence}</pre>
                   {finding.responseExcerpt ? <><p><strong>Sanitized response excerpt:</strong></p><pre className="code-block">{finding.responseExcerpt}</pre></> : null}
                   <p><strong>Expected behavior:</strong> {finding.expectedBehavior ?? 'Not recorded.'}</p>
@@ -207,6 +220,11 @@ export function ReportDetailPage() {
               {report.evidenceReferences.map((reference) => <div key={reference}><span>Finding</span><Link to={`/findings/${reference}`} className="inline-link mono-text">{reference}</Link></div>)}
             </div>
           ) : <p className="empty-copy">No evidence references were returned.</p>}
+          {report.evidenceProvenanceReferences?.length ? (
+            <div className="detail-list">
+              {report.evidenceProvenanceReferences.map((reference) => <div key={reference}><span>Provenance</span><code>{reference}</code></div>)}
+            </div>
+          ) : null}
           {report.recommendedRemediation?.length ? (
             <div className="detail-block detail-block--stacked detail-block--alert">
               <div className="detail-block__icon"><ShieldAlert size={16} /></div>

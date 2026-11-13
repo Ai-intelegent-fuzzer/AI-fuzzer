@@ -1,9 +1,11 @@
-import { BarChart3, FileText, Flag, History, LayoutDashboard, PlusCircle, Settings, Shield, Target } from 'lucide-react';
+import { BarChart3, Blocks, FileText, Flag, History, LayoutDashboard, PlusCircle, Settings, Shield, SlidersHorizontal, Target } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/targets', label: 'Targets', icon: Target },
+  { to: '/capabilities', label: 'Capabilities', icon: SlidersHorizontal },
+  { to: '/security-lab', label: 'Security Lab', icon: Blocks },
   { to: '/scans/new', label: 'New Scan', icon: PlusCircle },
   { to: '/scans/history', label: 'Scan History', icon: History },
   { to: '/findings', label: 'Findings', icon: Flag },
@@ -20,7 +22,7 @@ export function Sidebar() {
         </div>
         <div>
           <div className="brand-name">AI-Fuzzer</div>
-          <div className="brand-subtitle">AI Security Testing Platform</div>
+          <div className="brand-subtitle">Application-aware security</div>
         </div>
       </div>
 
@@ -42,12 +44,12 @@ export function Sidebar() {
 
       <div className="sidebar-footer">
         <div className="mini-panel">
-          <div className="mini-panel__label">Threat posture</div>
-          <div className="mini-panel__value">Elevated</div>
+          <div className="mini-panel__label">Execution scope</div>
+          <div className="mini-panel__value">Controlled</div>
         </div>
         <div className="mini-panel mini-panel--muted">
           <BarChart3 size={14} />
-          <span>Live assessment</span>
+          <span>Synthetic fixtures</span>
         </div>
       </div>
     </aside>

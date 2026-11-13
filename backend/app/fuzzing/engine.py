@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from app.attacks.registry import attack_registry
+from app.attacks.registry import PROMPT_INJECTION_BENCHMARK_CATEGORIES, attack_registry
 
 from .models import FuzzCase, FuzzConversation, FuzzTurn
 from .mutator import prompt_mutator
@@ -65,7 +65,7 @@ class FuzzingEngine:
         count: int = 10,
     ) -> list[FuzzCase]:
         if category is None:
-            attacks = attack_registry.generate_multiple(attack_registry.list_categories(), count)
+            attacks = attack_registry.generate_multiple(attack_registry.list_all_categories(), count)
         else:
             attacks = attack_registry.generate(category, count)
         return [attack_registry.to_fuzz_case(attack) for attack in attacks]
@@ -80,7 +80,7 @@ class FuzzingEngine:
     ) -> list[FuzzCase]:
         """Generate attack cases within a total budget that includes mutations."""
         selected_categories = (
-            attack_registry.list_categories()
+            attack_registry.list_all_categories()
             if category is None
             else [category]
         )
@@ -106,7 +106,7 @@ class FuzzingEngine:
         selected_categories = (
             list(FUZZ_TEMPLATES) if categories is None else categories
         )
-        registry_categories = set(attack_registry.list_categories())
+        registry_categories = set(attack_registry.list_all_categories())
         available_categories = list(dict.fromkeys(selected_categories))
         unknown_categories = [
             category
@@ -117,7 +117,8 @@ class FuzzingEngine:
             raise ValueError(
                 f"Unsupported test categories: {', '.join(unknown_categories)}"
             )
-        case_limit = min(max(max_cases, 0), MAX_GENERATED_CASES)
+        configured_limit = 1000 if set(available_categories).issubset(set(PROMPT_INJECTION_BENCHMARK_CATEGORIES)) else MAX_GENERATED_CASES
+        case_limit = min(max(max_cases, 0), configured_limit)
         total_case_limit = min(max(count, 0), case_limit)
 
         depth_limit = min(
@@ -143,10 +144,13 @@ class FuzzingEngine:
         for index in range(base_case_limit):
             category = available_categories[index % len(available_categories)]
             if category in registry_categories:
-                attacks = attack_registry.generate(category, count=1)
+                # Consume registry definitions in order so a selected benchmark
+                # produces stable, distinct source cases instead of repeating case 1.
+                attack_index = category_counts.get(category, 0)
+                attacks = attack_registry.generate(category, count=attack_index + 1)
                 if not attacks:
                     continue
-                base_case = attack_registry.to_fuzz_case(attacks[0])
+                base_case = attack_registry.to_fuzz_case(attacks[-1])
             else:
                 templates = FUZZ_TEMPLATES[category]
                 template_index = category_counts.get(category, 0) % len(templates)
@@ -222,7 +226,7 @@ class FuzzingEngine:
         turns: int = 3,
     ) -> list[FuzzConversation]:
         selected_categories = list(FUZZ_TEMPLATES) if categories is None else categories
-        registry_categories = set(attack_registry.list_categories())
+        registry_categories = set(attack_registry.list_all_categories())
         available_categories = list(dict.fromkeys(
             category
             for category in selected_categories
@@ -275,21 +279,7 @@ class FuzzingEngine:
             case_metadata: dict[str, object] = {}
             if attacks:
                 attack = attacks[0]
-                canary = attack.metadata.get("canary")
-                case_metadata.update(
-                    {
-                        "origin_prompt": prompt,
-                        "attack_id": attack.attack_id,
-                        "attack_name": attack.name,
-                        "attack_category": attack.category,
-                        "risk_area": attack.risk_area,
-                        "expected_behavior": attack.expected_behavior,
-                        "tags": list(attack.tags),
-                        "source": "ai_attack_library",
-                    }
-                )
-                if isinstance(canary, str) and canary in prompt:
-                    case_metadata["canary"] = canary
+                case_metadata.update(attack_registry.to_fuzz_case(attack).metadata)
             base_case_id = str(uuid4())
             case_metadata["origin_case_id"] = base_case_id
             case_metadata.setdefault("origin_prompt", prompt)

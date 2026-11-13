@@ -5,6 +5,23 @@ import type {
   ApiScan,
   ApiScanResult,
   ApiTarget,
+  ApiAttackCategory,
+  ApiBenchmark,
+  ApiCapabilityProfile,
+  ApiMcpResource,
+  ApiMcpServer,
+  ApiMemoryRecord,
+  ApiRagDocument,
+  ApiScenarioResult,
+  ApiSyntheticIdentity,
+  ApiSyntheticIntegration,
+  ApiSyntheticResource,
+  ApiToolDefinition,
+  ApiVectorCollection,
+  ApiVectorSearchResult,
+  ApiWebFixture,
+  ApiWebTestCase,
+  ApiWebTestRun,
   ConnectionTestResult,
   DashboardSummary,
   Finding,
@@ -86,6 +103,8 @@ const toTarget = (item: ApiTarget): Target => ({
   systemPrompt: item.system_prompt ?? '',
   temperature: item.temperature ?? 0,
   maxOutputTokens: item.max_output_tokens ?? 256,
+  targetScope: item.target_scope,
+  capabilityProfile: item.capability_profile,
 });
 
 const statusMap: Record<ApiScan['status'], Scan['status']> = {
@@ -118,6 +137,9 @@ const toScan = (item: ApiScan): Scan => {
     scanId: item.scan_id,
     target: item.target_id,
     targetId: item.target_id,
+    retryOfScanId: item.retry_of_scan_id ?? undefined,
+    targetScope: item.target_scope ?? undefined,
+    capabilityProfile: item.capability_profile ?? undefined,
     status: statusMap[item.status],
     requestedCases: item.requested_case_count,
     testsTotal: item.generated_case_count || item.requested_case_count,
@@ -134,6 +156,10 @@ const toScan = (item: ApiScan): Scan => {
     requestedCategories: item.requested_categories ?? item.coverage?.requested_categories ?? [],
     generatedCategories: item.generated_categories ?? item.coverage?.generated_categories ?? [],
     executedCategories: item.executed_categories ?? item.coverage?.executed_categories ?? [],
+    applicableCategories: item.applicable_categories ?? item.coverage?.applicable_categories ?? [],
+    notApplicableCategories: item.not_applicable_categories ?? item.coverage?.not_applicable_categories ?? [],
+    skippedCaseCount: item.skipped_case_count ?? 0,
+    inconclusiveAnalysisCount: item.inconclusive_analysis_count ?? 0,
     categoryCoveragePercent: item.category_coverage_percent
       ?? item.coverage?.category_coverage_percent
       ?? 0,
@@ -181,6 +207,8 @@ const toFinding = (item: ApiFinding, targetName = item.target_id): Finding => ({
       : 'FAIL',
   analysisStatus: item.analysis_status ?? undefined,
   riskScore: item.risk_score,
+  verificationStatus: item.verification_status,
+  evidenceProvenance: item.evidence_provenance,
 });
 
 const toReport = (item: ApiReport): Report => ({
@@ -221,6 +249,12 @@ const toReport = (item: ApiReport): Report => ({
   generatedCases: item.generated_cases,
   failedExecutions: item.failed_executions,
   scanStatus: item.scan_status,
+  targetScope: item.target_scope ?? undefined,
+  capabilityProfile: item.capability_profile ?? undefined,
+  categoriesApplicable: item.categories_applicable,
+  categoriesNotApplicable: item.categories_not_applicable,
+  evidenceProvenanceReferences: item.evidence_provenance_references,
+  findingsByVerificationStatus: item.findings_by_verification_status,
   detailedFindings: item.detailed_findings.map((finding) => ({
     id: finding.id,
     type: finding.type,
@@ -240,6 +274,9 @@ const toReport = (item: ApiReport): Report => ({
     reproductionSteps: finding.reproduction_steps,
     impact: finding.impact,
     responseExcerpt: finding.response_excerpt,
+    verificationStatus: finding.verification_status,
+    evidenceProvenance: finding.evidence_provenance,
+    reproductionReference: finding.reproduction_reference,
   })),
 });
 
@@ -281,6 +318,17 @@ export const apiClient = {
     return toTarget(updated);
   },
 
+  async updateTargetCapabilities(
+    targetId: string,
+    profile: ApiCapabilityProfile,
+  ): Promise<Target> {
+    const updated = await request<ApiTarget>(
+      `/targets/${encodeURIComponent(targetId)}/capabilities`,
+      { method: 'PUT', body: JSON.stringify(profile) },
+    );
+    return toTarget(updated);
+  },
+
   async deleteTargetCredential(targetId: string): Promise<void> {
     await request<void>(`/targets/${encodeURIComponent(targetId)}/credential`, { method: 'DELETE' });
   },
@@ -310,6 +358,123 @@ export const apiClient = {
 
   async getScanCategories(): Promise<string[]> {
     return request<string[]>('/scans/categories');
+  },
+
+  async getAttackCategories(targetId?: string): Promise<ApiAttackCategory[]> {
+    const query = targetId ? `?target_id=${encodeURIComponent(targetId)}` : '';
+    return request<ApiAttackCategory[]>(`/attacks/categories${query}`);
+  },
+
+  async getBenchmarks(): Promise<ApiBenchmark[]> {
+    return request<ApiBenchmark[]>('/benchmarks');
+  },
+
+  async getSyntheticIdentities(): Promise<ApiSyntheticIdentity[]> {
+    return request<ApiSyntheticIdentity[]>('/identities');
+  },
+
+  async getSyntheticResources(): Promise<ApiSyntheticResource[]> {
+    return request<ApiSyntheticResource[]>('/authorization/resources');
+  },
+
+  async getRagDocuments(): Promise<ApiRagDocument[]> {
+    return request<ApiRagDocument[]>('/rag/documents');
+  },
+
+  async getSyntheticTools(): Promise<ApiToolDefinition[]> {
+    return request<ApiToolDefinition[]>('/tools');
+  },
+
+  async getMcpServers(): Promise<ApiMcpServer[]> {
+    return request<ApiMcpServer[]>('/mcp/servers');
+  },
+
+  async getMcpResources(): Promise<ApiMcpResource[]> {
+    return request<ApiMcpResource[]>('/mcp/resources');
+  },
+
+  async getSyntheticIntegrations(): Promise<ApiSyntheticIntegration[]> {
+    return request<ApiSyntheticIntegration[]>('/integrations');
+  },
+
+  async getVectorCollections(): Promise<ApiVectorCollection[]> {
+    return request<ApiVectorCollection[]>('/vector-store/collections');
+  },
+
+  async searchVectorDocuments(input: {
+    identity_id: string;
+    session_id: string;
+    query: string;
+    collection_id: string;
+  }): Promise<{ results: ApiVectorSearchResult[] }> {
+    return request<{ results: ApiVectorSearchResult[] }>('/vector-store/search', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async getSyntheticMemories(identity: Pick<ApiSyntheticIdentity, 'identity_id' | 'session_id'>): Promise<ApiMemoryRecord[]> {
+    return request<ApiMemoryRecord[]>('/memories/search', {
+      method: 'POST',
+      body: JSON.stringify(identity),
+    });
+  },
+
+  async getWebSecurityFixtures(): Promise<ApiWebFixture[]> {
+    return request<ApiWebFixture[]>('/web-security/fixtures');
+  },
+
+  async getWebSecurityTests(): Promise<ApiWebTestCase[]> {
+    return request<ApiWebTestCase[]>('/web-security/tests');
+  },
+
+  async runWebSecurityTests(fixtureId: string, testIds: string[]): Promise<ApiWebTestRun> {
+    return request<ApiWebTestRun>('/web-security/runs', {
+      method: 'POST',
+      body: JSON.stringify({ fixture_id: fixtureId, test_ids: testIds }),
+    });
+  },
+
+  async runAuthorizationScenario(scenario: string): Promise<ApiScenarioResult> {
+    return request<ApiScenarioResult>('/authorization/tests', {
+      method: 'POST',
+      body: JSON.stringify({ scenario }),
+    });
+  },
+
+  async runRagScenario(scenario: string): Promise<ApiScenarioResult> {
+    return request<ApiScenarioResult>('/rag/scenarios', {
+      method: 'POST',
+      body: JSON.stringify({ scenario }),
+    });
+  },
+
+  async runToolSecurityTest(
+    scenario: string,
+    identity: Pick<ApiSyntheticIdentity, 'identity_id' | 'session_id'>,
+  ): Promise<ApiScenarioResult> {
+    return request<ApiScenarioResult>('/tools/security-tests', {
+      method: 'POST',
+      body: JSON.stringify({
+        scenario,
+        identity_id: identity.identity_id,
+        session_id: identity.session_id,
+      }),
+    });
+  },
+
+  async runIntegrationSecurityTest(
+    scenario: string,
+    identity: Pick<ApiSyntheticIdentity, 'identity_id' | 'session_id'>,
+  ): Promise<ApiScenarioResult> {
+    return request<ApiScenarioResult>('/integrations/security-tests', {
+      method: 'POST',
+      body: JSON.stringify({
+        scenario,
+        identity_id: identity.identity_id,
+        session_id: identity.session_id,
+      }),
+    });
   },
 
   async getScans(): Promise<Scan[]> {
@@ -359,6 +524,7 @@ export const apiClient = {
         max_retries: 0,
         concurrency: 1,
         delay_seconds: input.delayMs / 1000,
+        benchmark_id: input.benchmarkId,
       }),
     });
     return toScan(created);
@@ -366,6 +532,14 @@ export const apiClient = {
 
   async cancelScan(scanId: string): Promise<Scan> {
     return toScan(await request<ApiScan>(`/scans/${encodeURIComponent(scanId)}/cancel`, { method: 'POST' }));
+  },
+
+  async retryScanErrors(scanId: string): Promise<Scan> {
+    return toScan(await request<ApiScan>(`/scans/${encodeURIComponent(scanId)}/retry-errors`, { method: 'POST' }));
+  },
+
+  async reevaluateScan(scanId: string): Promise<{ scan_id: string; reevaluated_completed_cases: number }> {
+    return request(`/scans/${encodeURIComponent(scanId)}/reevaluate`, { method: 'POST' });
   },
 
   async getFindings(filters: { category?: string; severity?: string; status?: string } = {}): Promise<Finding[]> {

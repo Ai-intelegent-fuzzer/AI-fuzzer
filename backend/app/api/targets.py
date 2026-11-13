@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, SecretStr
 
 from app.adapters.manager import target_manager
-from app.adapters.models import Target, TargetCreate
+from app.adapters.models import CapabilityProfile, Target, TargetCreate
 
 router = APIRouter(prefix="/targets", tags=["Targets"])
 
@@ -32,6 +32,17 @@ def get_target(target_id: str) -> Target:
 @router.put("/{target_id}", response_model=Target)
 def update_target(target_id: str, target_data: TargetCreate) -> Target:
     target = target_manager.update(target_id, target_data)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    return target
+
+
+@router.put("/{target_id}/capabilities", response_model=Target)
+def update_target_capabilities(
+    target_id: str,
+    capability_profile: CapabilityProfile,
+) -> Target:
+    target = target_manager.update_capabilities(target_id, capability_profile)
     if target is None:
         raise HTTPException(status_code=404, detail="Target not found")
     return target

@@ -31,6 +31,26 @@ class AnalysisOutcome(str, Enum):
     NO_ISSUE_OBSERVED = "no_issue_observed"
     INCONCLUSIVE = "inconclusive"
     EXECUTION_FAILED = "execution_failed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class DetectionClassification(str, Enum):
+    """Evidence-based result classification independent of legacy PASS/FAIL fields."""
+
+    CONFIRMED_ATTACK = "confirmed_attack"
+    BLOCKED = "blocked"
+    INCONCLUSIVE = "inconclusive"
+    EXECUTION_ERROR = "execution_error"
+
+
+class FindingVerificationStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    LIKELY = "likely"
+    POTENTIAL = "potential"
+    INCONCLUSIVE = "inconclusive"
+    NOT_APPLICABLE = "not_applicable"
+    NO_ISSUE_OBSERVED = "no_issue_observed"
+    EXECUTION_FAILURE = "execution_failure"
 
 
 class IndicatorType(str, Enum):
@@ -53,6 +73,28 @@ class BehavioralIndicator(BaseModel):
     confidence: Confidence
     category: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceProvenance(BaseModel):
+    provenance_id: str
+    scan_id: str | None = None
+    test_case_id: str
+    target_id: str
+    canary_identifier: str | None = None
+    canary_present_in_protected_context: bool = False
+    canary_present_in_test_input: bool = False
+    canary_present_in_response: bool = False
+    protected_context_verified: bool = False
+    disclosure_verified: bool = False
+    verification_level: str
+    evidence_type: str
+    analyzer_rule_id: str | None = None
+    analyzer_rule_version: str | None = None
+    identity_id: str | None = None
+    tenant_id: str | None = None
+    retrieval_reference: str | None = None
+    tool_reference: str | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AnalysisAssessment(BaseModel):
@@ -90,6 +132,9 @@ class Finding(BaseModel):
     indicator_type: str | None = None
     analysis_status: AnalysisStatus | None = None
     reproducibility: dict[str, Any] = Field(default_factory=dict)
+    evidence_provenance: list[EvidenceProvenance] = Field(default_factory=list)
+    verification_status: FindingVerificationStatus = FindingVerificationStatus.POTENTIAL
+    reproduction_reference: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @computed_field
@@ -118,8 +163,10 @@ class AnalysisResult(BaseModel):
     vulnerable: bool
     status: AnalysisStatus = AnalysisStatus.INCONCLUSIVE
     outcome: AnalysisOutcome = AnalysisOutcome.INCONCLUSIVE
+    classification: DetectionClassification = DetectionClassification.INCONCLUSIVE
     findings: list[Finding] = Field(default_factory=list)
     attack_id: str | None = None
     expected_behavior: str | None = None
     observed_behavior: str | None = None
     indicators: list[BehavioralIndicator] = Field(default_factory=list)
+    evidence_provenance: list[EvidenceProvenance] = Field(default_factory=list)

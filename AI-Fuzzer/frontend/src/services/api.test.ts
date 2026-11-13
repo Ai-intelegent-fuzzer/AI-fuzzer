@@ -155,6 +155,99 @@ describe('apiClient', () => {
     expect(result).toEqual({ status: 'Connection Successful', message: 'Target endpoint is reachable.' });
   });
 
+  it('updates capability profiles and queries categories for a selected target', async () => {
+    const profile = {
+      capabilities: {
+        model_endpoint: {
+          enabled: true,
+          validation_status: 'configured' as const,
+          supported_security_tests: ['prompt_injection'],
+          known_limitations: [],
+        },
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/targets/authorized-target/capabilities')) {
+        expect(init?.method).toBe('PUT');
+        expect(init?.body).toBe(JSON.stringify(profile));
+        return jsonResponse({
+          ...targetResponse,
+          target_scope: 'model_endpoint',
+          capability_profile: profile,
+        });
+      }
+      if (url.endsWith('/attacks/categories?target_id=authorized-target')) {
+        return jsonResponse([{
+          category: 'prompt_injection',
+          attack_count: 2,
+          required_capabilities: [],
+          applicable_target_scopes: ['model_endpoint'],
+          risk_levels: ['medium'],
+          applicable: true,
+        }]);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const updated = await apiClient.updateTargetCapabilities('authorized-target', profile);
+    const categories = await apiClient.getAttackCategories('authorized-target');
+
+    expect(updated).toMatchObject({
+      targetId: 'authorized-target',
+      targetScope: 'model_endpoint',
+      capabilityProfile: profile,
+    });
+    expect(categories[0]).toMatchObject({
+      category: 'prompt_injection',
+      applicable: true,
+    });
+  });
+
+  it('uses controlled synthetic security test routes and identity context', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/authorization/tests')) {
+        expect(init?.body).toBe(JSON.stringify({ scenario: 'horizontal_privilege_escalation' }));
+        return jsonResponse({ outcome: 'no_issue_observed', reason: 'Policy denied access.' }, 201);
+      }
+      if (url.endsWith('/rag/scenarios')) {
+        expect(init?.body).toBe(JSON.stringify({ scenario: 'cross_tenant_document_access' }));
+        return jsonResponse({ outcome: 'no_issue_observed', documents: [], audits: [] }, 201);
+      }
+      if (url.endsWith('/tools/security-tests')) {
+        expect(init?.body).toBe(JSON.stringify({
+          scenario: 'unauthorized_tool_invocation',
+          identity_id: 'synthetic-user-a',
+          session_id: 'synthetic-session-user-a',
+        }));
+        return jsonResponse({ outcome: 'no_issue_observed', reason: 'Policy denied access.' }, 201);
+      }
+      if (url.endsWith('/integrations/security-tests')) {
+        expect(init?.body).toBe(JSON.stringify({
+          scenario: 'cross_tenant_connector_exposure',
+          identity_id: 'synthetic-user-a',
+          session_id: 'synthetic-session-user-a',
+        }));
+        return jsonResponse({ outcome: 'no_issue_observed', reason: 'Policy denied access.' }, 201);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const identity = {
+      identity_id: 'synthetic-user-a',
+      session_id: 'synthetic-session-user-a',
+    };
+
+    await apiClient.runAuthorizationScenario('horizontal_privilege_escalation');
+    await apiClient.runRagScenario('cross_tenant_document_access');
+    await apiClient.runToolSecurityTest('unauthorized_tool_invocation', identity);
+    await apiClient.runIntegrationSecurityTest('cross_tenant_connector_exposure', identity);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('maps actual analyzer findings and generated report data', async () => {
     const finding = {
       finding_id: 'finding-1',

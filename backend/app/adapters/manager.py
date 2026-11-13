@@ -3,7 +3,7 @@ from datetime import datetime
 
 from app.database.store import Database, database
 
-from .models import Target, TargetCreate
+from .models import CapabilityProfile, Target, TargetCreate
 
 
 class TargetManager:
@@ -28,12 +28,29 @@ class TargetManager:
         return self._store.get_target(target_id)
 
     def update(self, target_id: str, target_data: TargetCreate) -> Target | None:
+        current = self.get(target_id)
+        if current is None:
+            return None
+        data = target_data.model_dump()
+        if "target_scope" not in target_data.model_fields_set:
+            data["target_scope"] = current.target_scope
+        if "capability_profile" not in target_data.model_fields_set:
+            data["capability_profile"] = current.capability_profile
         target = Target(
             target_id=target_id,
-            **target_data.model_dump(),
+            **data,
             api_key=target_data.api_key,
         )
         return target if self._store.update_target(target_id, target) else None
+
+    def update_capabilities(
+        self,
+        target_id: str,
+        capability_profile: CapabilityProfile,
+    ) -> Target | None:
+        if not self._store.update_target_capabilities(target_id, capability_profile):
+            return None
+        return self.get(target_id)
 
     def delete(self, target_id: str) -> bool:
         return self._store.delete_target(target_id)

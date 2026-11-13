@@ -1,11 +1,19 @@
 from datetime import datetime, timezone
 import re
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.adapters.manager import target_manager
-from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
+from app.analysis.models import (
+    AnalysisResult,
+    AnalysisStatus,
+    EvidenceProvenance,
+    Finding,
+    FindingVerificationStatus,
+    Severity,
+)
 from app.database.store import database
 from app.attacks.registry import attack_registry
 from app.fuzzing.engine import FUZZ_TEMPLATES
@@ -34,10 +42,13 @@ class ReportFinding(BaseModel):
     reproduction_steps: list[str] = Field(default_factory=list)
     impact: str = "Observed model behavior; external impact was not verified."
     response_excerpt: str | None = None
+    verification_status: FindingVerificationStatus = FindingVerificationStatus.POTENTIAL
+    evidence_provenance: list[EvidenceProvenance] = Field(default_factory=list)
+    reproduction_reference: str | None = None
 
 
 class ScanReport(BaseModel):
-    report_revision: int = 2
+    report_revision: int = 3
     report_id: str
     title: str
     generated_at: datetime
@@ -80,6 +91,12 @@ class ScanReport(BaseModel):
     generated_cases: int = 0
     failed_executions: int = 0
     scan_status: str = "unknown"
+    target_scope: str | None = None
+    capability_profile: dict[str, Any] | None = None
+    categories_applicable: list[str] = Field(default_factory=list)
+    categories_not_applicable: list[str] = Field(default_factory=list)
+    evidence_provenance_references: list[str] = Field(default_factory=list)
+    findings_by_verification_status: dict[str, int] = Field(default_factory=dict)
 
 
 _SEVERITY_ORDER = {
@@ -99,6 +116,8 @@ def _sanitize_evidence(value: str, api_key: str | None) -> str:
         r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]+=*",
         r"(?i)((?:api[_ -]?key|access[_ -]?token|client[_ -]?secret|password)\s*[:=]\s*)[^\s,;]+",
         r"\b(?:sk-[A-Za-z0-9_-]{12,}|gsk_[A-Za-z0-9_-]{12,}|AIza[A-Za-z0-9_-]{20,})\b",
+        r"\bSYNTHETIC-CANARY-[A-Z0-9-]+\b",
+        r"\[SYNTHETIC_(?:SECRET|SYSTEM_PROMPT|USER_DATA|CANARY)(?:_[A-Z0-9]+)*\]",
     )
     for pattern in patterns:
         sanitized = re.sub(pattern, r"\1[REDACTED]" if "bearer" in pattern.lower() else "[REDACTED]", sanitized)
@@ -115,6 +134,9 @@ def _conclusion(
     inconclusive_analyses: int,
     category_coverage_percent: float,
     scan_status: ScanStatus,
+    confirmed_findings: int,
+    likely_findings: int,
+    potential_findings: int,
 ) -> str:
     incomplete = (
         failed_executions > 0
@@ -135,8 +157,11 @@ def _conclusion(
         )
     if finding_count:
         return (
-            f"The assessment identified {finding_count} finding(s). "
-            "Findings are heuristic response evidence and require human review."
+            f"The assessment identified {finding_count} finding(s): "
+            f"{confirmed_findings} confirmed through controlled evidence, "
+            f"{likely_findings} likely response-behavior indicator(s), and "
+            f"{potential_findings} potential indicator(s). Model-response findings "
+            "do not establish external impact and require human review."
         )
     return (
         "No category-specific vulnerability indicator was observed in the completed "
@@ -183,9 +208,15 @@ def _report_for(scan: ScanRecord) -> ScanReport:
         or (
             request.categories
             if request and request.categories is not None
-            else sorted(set(attack_registry.list_categories()) | set(FUZZ_TEMPLATES))
+            else sorted(set(attack_registry.list_all_categories()) | set(FUZZ_TEMPLATES))
         )
     )
+    applicable_categories = list(
+        scan.applicable_categories
+        if scan.capability_profile is not None or scan.not_applicable_categories
+        else requested_categories
+    )
+    not_applicable_categories = list(scan.not_applicable_categories)
     generated_categories = sorted(
         set(scan.generated_categories)
         | {case.category for case in persisted_generated_cases}
@@ -198,12 +229,12 @@ def _report_for(scan: ScanRecord) -> ScanReport:
     )
     category_coverage_percent = (
         round(
-            len(set(requested_categories).intersection(categories))
-            / len(requested_categories)
+            len(set(applicable_categories).intersection(categories))
+            / len(applicable_categories)
             * 100,
             2,
         )
-        if requested_categories
+        if applicable_categories
         else 100.0
     )
     inconclusive_analyses = sum(
@@ -221,10 +252,26 @@ def _report_for(scan: ScanRecord) -> ScanReport:
         if (execution := result.get("execution")) is not None
         and hasattr(execution, "case_id")
     }
+    evidence_provenance = [
+        provenance
+        for result in results
+        if isinstance(result.get("analysis"), AnalysisResult)
+        for provenance in result["analysis"].evidence_provenance
+    ]
+    verification_counts = {
+        status.value: sum(
+            finding.verification_status == status for finding in findings
+        )
+        for status in FindingVerificationStatus
+    }
     api_key = target.api_key.get_secret_value() if target and target.api_key else None
     summary = (
         f"{len(findings)} findings across {len(results)} executed tests; "
-        f"{failed_executions} failed executions and {inconclusive_analyses} inconclusive analyses."
+        f"{verification_counts[FindingVerificationStatus.CONFIRMED.value]} confirmed, "
+        f"{verification_counts[FindingVerificationStatus.LIKELY.value]} likely, "
+        f"{verification_counts[FindingVerificationStatus.POTENTIAL.value]} potential; "
+        f"{failed_executions} failed executions and "
+        f"{inconclusive_analyses} inconclusive analyses."
     )
     configuration = (
         f"Requested cases: {request.count}; categories: "
@@ -245,7 +292,10 @@ def _report_for(scan: ScanRecord) -> ScanReport:
         target_name=target_name,
         highest_severity=highest_severity,
         executive_summary=summary,
-        target_information=f"Target ID: {scan.target_id}",
+        target_information=(
+            f"Target ID: {scan.target_id}; scope: "
+            f"{scan.target_scope.value if scan.target_scope is not None else 'unknown'}."
+        ),
         scan_configuration=configuration,
         tests_executed=len(results),
         severity_distribution=[
@@ -293,6 +343,14 @@ def _report_for(scan: ScanRecord) -> ScanReport:
                     )
                     else None
                 ),
+                impact=(
+                    "A synthetic canary was disclosed from a verified protected context."
+                    if finding.verification_status == FindingVerificationStatus.CONFIRMED
+                    else "Observed model behavior; external impact was not verified."
+                ),
+                verification_status=finding.verification_status,
+                evidence_provenance=finding.evidence_provenance,
+                reproduction_reference=finding.reproduction_reference,
             )
             for finding in findings
         ],
@@ -319,6 +377,18 @@ def _report_for(scan: ScanRecord) -> ScanReport:
         generated_cases=generated_case_count,
         failed_executions=failed_executions,
         scan_status=scan.status.value,
+        target_scope=scan.target_scope.value if scan.target_scope is not None else None,
+        capability_profile=(
+            scan.capability_profile.model_dump(mode="json")
+            if scan.capability_profile is not None
+            else None
+        ),
+        categories_applicable=applicable_categories,
+        categories_not_applicable=not_applicable_categories,
+        evidence_provenance_references=sorted({
+            item.provenance_id for item in evidence_provenance
+        }),
+        findings_by_verification_status=verification_counts,
         conclusion=_conclusion(
             finding_count=len(findings),
             requested_cases=scan.requested_case_count,
@@ -328,6 +398,15 @@ def _report_for(scan: ScanRecord) -> ScanReport:
             inconclusive_analyses=inconclusive_analyses,
             category_coverage_percent=category_coverage_percent,
             scan_status=scan.status,
+            confirmed_findings=verification_counts[
+                FindingVerificationStatus.CONFIRMED.value
+            ],
+            likely_findings=verification_counts[
+                FindingVerificationStatus.LIKELY.value
+            ],
+            potential_findings=verification_counts[
+                FindingVerificationStatus.POTENTIAL.value
+            ],
         ),
     )
     database.save_report(
@@ -346,7 +425,7 @@ def list_reports() -> list[ScanReport]:
         report_id = data.get("report_id")
         if not isinstance(report_id, str):
             continue
-        if data.get("report_revision") != 2:
+        if data.get("report_revision") != 3:
             scan = scan_scheduler.get(report_id)
             if scan is not None and scan.status in {
                 ScanStatus.COMPLETED,
@@ -377,7 +456,7 @@ def generate_report(scan_id: str) -> ScanReport:
 def get_report(report_id: str) -> ScanReport:
     persisted = database.get_report(report_id)
     if persisted is not None:
-        if persisted.get("report_revision") != 2:
+        if persisted.get("report_revision") != 3:
             scan = scan_scheduler.get(report_id)
             if scan is not None and scan.status in {
                 ScanStatus.COMPLETED,

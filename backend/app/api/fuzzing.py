@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.adapters.manager import target_manager
 from app.attacks.registry import attack_registry
-from app.fuzzing.engine import fuzz_engine
+from app.attacks.capabilities import category_supported_by_profile
+from app.fuzzing.engine import FUZZ_TEMPLATES, fuzz_engine
 from app.fuzzing.models import FuzzCase
 
 
@@ -28,7 +29,17 @@ def generate_fuzz_cases(
             detail="Target not found",
         )
 
-    return fuzz_engine.generate(count)
+    categories = sorted(set(attack_registry.list_all_categories()) | set(FUZZ_TEMPLATES))
+    applicable_categories = [
+        category
+        for category in categories
+        if category_supported_by_profile(
+            category,
+            target.capability_profile,
+            target.target_scope,
+        )
+    ]
+    return fuzz_engine.generate(count, applicable_categories)
 
 
 @router.post(
@@ -44,9 +55,18 @@ def generate_attack_cases(
     if target is None:
         raise HTTPException(status_code=404, detail="Target not found")
 
-    if category is None:
-        attacks = attack_registry.generate_multiple(attack_registry.list_categories(), count)
-    else:
-        attacks = attack_registry.generate(category, count)
-
-    return [attack_registry.to_fuzz_case(attack) for attack in attacks]
+    categories = [category] if category is not None else attack_registry.list_all_categories()
+    applicable_categories = [
+        item
+        for item in categories
+        if category_supported_by_profile(
+            item,
+            target.capability_profile,
+            target.target_scope,
+        )
+    ]
+    return fuzz_engine.generate(
+        count,
+        applicable_categories,
+        max_mutation_depth=0,
+    )

@@ -7,7 +7,13 @@ from app.adapters.manager import target_manager
 from app.analysis.analyzer import response_analyzer
 from app.execution.executor import fuzz_executor
 from app.adapters.factory import get_adapter
-from app.adapters.models import TargetType
+from app.analysis.models import EvidenceProvenance
+from app.analysis.provenance import (
+    build_evidence_provenance,
+    verified_active_canaries,
+)
+from app.rag.capabilities import category_supported_by_profile
+from app.fuzzing.engine import FUZZ_TEMPLATES
 from app.fuzzing.engine import fuzz_engine
 from app.fuzzing.models import FuzzCase, FuzzConversation, FuzzTurn
 
@@ -20,7 +26,7 @@ class FuzzOrchestrator:
         *,
         categories: list[str] | None = None,
         max_mutation_depth: int = 1,
-        max_cases: int = 100,
+        max_cases: int = 1000,
         total_case_limit: int | None = None,
         max_mutations_per_case: int = 10,
         timeout_seconds: float = 30.0,
@@ -33,11 +39,27 @@ class FuzzOrchestrator:
         scan_id: str | None = None,
         cancel_event: Event | None = None,
         on_cases_generated: Callable[[list[FuzzCase]], None] | None = None,
+        on_provenance: Callable[[list[EvidenceProvenance]], None] | None = None,
         on_result: Callable[[dict[str, object]], None] | None = None,
+        cases: list[FuzzCase] | None = None,
     ) -> list[dict[str, object]] | None:
         target = target_manager.get(target_id)
         if target is None:
             return None
+        selected_categories = (
+            list(FUZZ_TEMPLATES)
+            if categories is None
+            else list(categories)
+        )
+        selected_categories = [
+            category
+            for category in selected_categories
+            if category_supported_by_profile(
+                category,
+                target.capability_profile,
+                target.target_scope,
+            )
+        ]
         adapter = get_adapter(target)
 
         def execute_case(
@@ -56,35 +78,27 @@ class FuzzOrchestrator:
             )
             if scan_id is not None:
                 execution = execution.model_copy(update={"scan_id": scan_id})
-            analysis_case = fuzz_case
-            declared_canaries = fuzz_case.metadata.get("protected_canaries", [])
-            if isinstance(declared_canaries, (list, tuple)):
-                system_instruction = (
-                    fuzz_case.metadata.get("security_test_system_instruction", "")
-                    if (
-                        target.target_type == TargetType.OPENAI_COMPATIBLE
-                        and not target.system_prompt
-                    )
-                    else ""
-                )
-                prompt_context = "\n".join(
-                    [*(conversation_context or []), fuzz_case.prompt]
-                )
-                active_canaries = [
-                    value
-                    for value in declared_canaries
-                    if isinstance(value, str)
-                    and value
-                    and value.casefold() in system_instruction.casefold()
-                    and value.casefold() not in prompt_context.casefold()
-                ] if isinstance(system_instruction, str) else []
-                analysis_case = fuzz_case.model_copy(deep=True)
-                analysis_case.metadata["active_protected_canaries"] = active_canaries
+            provenance = build_evidence_provenance(
+                target,
+                fuzz_case,
+                execution,
+                scan_id=scan_id,
+                conversation_context=conversation_context,
+            )
+            analysis_case = fuzz_case.model_copy(deep=True)
+            analysis_case.metadata["active_protected_canaries"] = (
+                verified_active_canaries(fuzz_case.metadata, provenance)
+            )
+            analysis_case.metadata["evidence_provenance"] = [
+                item.model_dump(mode="json") for item in provenance
+            ]
             analysis = response_analyzer.analyze(
                 execution=execution,
                 category=fuzz_case.category,
                 fuzz_case=analysis_case,
             )
+            if on_provenance is not None:
+                on_provenance(analysis.evidence_provenance)
             result = {"case": fuzz_case, "execution": execution, "analysis": analysis}
             if on_result is not None:
                 on_result(result)
@@ -124,7 +138,7 @@ class FuzzOrchestrator:
 
             conversations = fuzz_engine.generate_conversations(
                 total_case_limit,
-                categories,
+                selected_categories,
                 turns=turns,
             )
             generated_cases = [
@@ -161,9 +175,9 @@ class FuzzOrchestrator:
                 nested_results = list(pool.map(execute_conversation, conversations))
             return [result for group in nested_results for result in group]
 
-        fuzz_cases = fuzz_engine.generate(
+        fuzz_cases = list(cases) if cases is not None else fuzz_engine.generate(
             count,
-            categories,
+            selected_categories,
             max_mutation_depth=max_mutation_depth,
             max_cases=min(max_cases, count),
             max_mutations_per_case=max_mutations_per_case,

@@ -3,12 +3,13 @@ import { Play, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { SectionCard } from '../components/common/SectionCard';
 import { apiClient } from '../services/api';
-import type { Target } from '../types';
+import type { ApiAttackCategory, Target } from '../types';
 
 export function NewScanPage() {
   const [targets, setTargets] = useState<Target[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<ApiAttackCategory[]>([]);
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [benchmarkId, setBenchmarkId] = useState<string | undefined>();
   const [targetId, setTargetId] = useState('');
   const [count, setCount] = useState(5);
   const [timeoutSeconds, setTimeoutSeconds] = useState(30);
@@ -23,12 +24,16 @@ export function NewScanPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    Promise.all([apiClient.getTargets(), apiClient.getScanCategories()])
-      .then(([targetItems, categoryItems]) => {
+    apiClient.getTargets()
+      .then(async (targetItems) => {
         setTargets(targetItems);
+        const initialTarget = targetItems[0];
+        if (initialTarget) setTargetId(initialTarget.targetId);
+        const categoryItems = await apiClient.getAttackCategories(initialTarget?.targetId);
         setCategories(categoryItems);
-        setSelectedCategories(categoryItems);
-        if (targetItems[0]) setTargetId(targetItems[0].targetId);
+        setSelectedCategories(categoryItems
+          .filter((category) => category.applicable)
+          .map((category) => category.category));
       })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : 'Unable to load scan configuration.'))
       .finally(() => setIsLoading(false));
@@ -38,16 +43,40 @@ export function NewScanPage() {
   const isReady = Boolean(selectedTarget && selectedCategories.length && connectionPassed && authorizationConfirmed)
     && !isSubmitting && !isTesting;
 
-  const changeTarget = (id: string) => {
+  const changeTarget = async (id: string) => {
     setTargetId(id);
     setConnectionPassed(false);
     setConnectionMessage('');
+    setError('');
+    try {
+      const targetCategories = await apiClient.getAttackCategories(id);
+      setCategories(targetCategories);
+      setSelectedCategories(targetCategories
+        .filter((category) => category.applicable)
+        .map((category) => category.category));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to load target-specific categories.');
+    }
   };
 
   const toggleCategory = (category: string) => {
+    setBenchmarkId(undefined);
     setSelectedCategories((current) => current.includes(category)
       ? current.filter((value) => value !== category)
       : [...current, category]);
+  };
+
+  const selectPromptInjectionBenchmark = async () => {
+    try {
+      const benchmark = (await apiClient.getBenchmarks()).find((item) => item.benchmark_id === 'prompt_injection_180');
+      if (!benchmark) throw new Error('Prompt-injection benchmark is unavailable.');
+      setBenchmarkId(benchmark.benchmark_id);
+      setCount(benchmark.case_count);
+      setSelectedCategories(benchmark.categories);
+      setError('');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Unable to load benchmark.');
+    }
   };
 
   const testConnection = async () => {
@@ -78,8 +107,8 @@ export function NewScanPage() {
       setError('Select an authorized target before starting a scan.');
       return;
     }
-    if (count < 1 || count > 100) {
-      setError('Scan count must be between 1 and 100.');
+    if (count < 1 || count > 1000) {
+      setError('Scan count must be between 1 and 1000.');
       return;
     }
     if (!selectedCategories.length) {
@@ -101,6 +130,7 @@ export function NewScanPage() {
         timeout: timeoutSeconds,
         delayMs,
         authorizationConfirmed,
+        benchmarkId,
       });
       navigate(`/scans/${created.scanId}`);
     } catch (cause) {
@@ -152,8 +182,12 @@ export function NewScanPage() {
 
             <label>
               Total test cases (including mutations)
-              <input type="number" min="1" max="100" step="1" value={count} onChange={(event) => setCount(Number(event.target.value))} />
+              <input type="number" min="1" max="1000" step="1" value={count} onChange={(event) => { setBenchmarkId(undefined); setCount(Number(event.target.value)); }} />
             </label>
+            <button type="button" className="secondary-button" onClick={selectPromptInjectionBenchmark}>
+              Run 180-case prompt-injection benchmark
+            </button>
+            {benchmarkId ? <p className="muted-label">Selected benchmark: {benchmarkId} · sequential, concurrency 1</p> : null}
             {count > 0 && selectedCategories.length > count ? (
               <div className="inline-message inline-message--warning" role="status">
                 This scan requests {count} total test case(s) across {selectedCategories.length} categories.
@@ -164,12 +198,28 @@ export function NewScanPage() {
             <div className="checkbox-group">
               <div className="checkbox-group__header">
                 <h3>Supported test categories</h3>
-                <button type="button" className="text-button" onClick={() => setSelectedCategories(categories)}>Select all</button>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setSelectedCategories(categories
+                    .filter((category) => category.applicable)
+                    .map((category) => category.category))}
+                >
+                  Select all applicable
+                </button>
               </div>
               {categories.map((category) => (
-                <label key={category} className="checkbox-row">
-                  <input type="checkbox" checked={selectedCategories.includes(category)} onChange={() => toggleCategory(category)} />
-                  <span>{category.replace(/_/g, ' ')}</span>
+                <label key={category.category} className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedCategories.includes(category.category)}
+                    disabled={!category.applicable}
+                    onChange={() => toggleCategory(category.category)}
+                  />
+                  <span>
+                    {category.category.replace(/_/g, ' ')}
+                    {!category.applicable ? ' · not applicable to this target' : ''}
+                  </span>
                 </label>
               ))}
             </div>

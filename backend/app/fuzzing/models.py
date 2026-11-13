@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.adapters.models import CapabilityProfile, TargetScope
+
 
 class FuzzCase(BaseModel):
     case_id: str
@@ -45,7 +47,10 @@ class ScanStatus(str, Enum):
 class ScanCreateRequest(BaseModel):
     target_id: str
     authorization_confirmed: bool = False
-    count: int = Field(default=10, ge=1, le=100)
+    count: int = Field(default=10, ge=1, le=1000)
+    benchmark_id: str | None = None
+    retry_of_scan_id: str | None = None
+    retry_case_ids: list[str] | None = None
     categories: list[str] | None = None
     max_mutation_depth: int = Field(default=0, ge=0, le=5)
     max_mutations_per_case: int = Field(default=0, ge=0, le=10)
@@ -76,6 +81,11 @@ class ScanMetrics(BaseModel):
     total_executed_cases: int = 0
     successful_executions: int = 0
     failed_executions: int = 0
+    skipped_cases: int = 0
+    inconclusive_analyses: int = 0
+    applicable_category_count: int = 0
+    covered_category_count: int = 0
+    not_applicable_category_count: int = 0
     timeouts: int = 0
     retries: int = 0
     mutations_generated: int = Field(
@@ -101,6 +111,8 @@ class FuzzingCoverage(BaseModel):
     requested_categories: list[str] = Field(default_factory=list)
     generated_categories: list[str] = Field(default_factory=list)
     executed_categories: list[str] = Field(default_factory=list)
+    applicable_categories: list[str] = Field(default_factory=list)
+    not_applicable_categories: list[str] = Field(default_factory=list)
     category_coverage_percent: float = 0.0
     categories_tested: list[str] = Field(default_factory=list)
     mutation_strategies_tested: list[str] = Field(default_factory=list)
@@ -113,12 +125,19 @@ class FuzzingCoverage(BaseModel):
 class ScanRecord(BaseModel):
     scan_id: str
     target_id: str
+    retry_of_scan_id: str | None = None
+    target_scope: TargetScope | None = None
+    capability_profile: CapabilityProfile | None = None
     status: ScanStatus = ScanStatus.CREATED
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     requested_case_count: int
     requested_categories: list[str] = Field(default_factory=list)
+    applicable_categories: list[str] = Field(default_factory=list)
+    not_applicable_categories: list[str] = Field(default_factory=list)
+    skipped_case_count: int = 0
+    inconclusive_analysis_count: int = 0
     generated_categories: list[str] = Field(default_factory=list)
     executed_categories: list[str] = Field(default_factory=list)
     category_coverage_percent: float = 0.0

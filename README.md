@@ -98,10 +98,13 @@ Browser PDF output uses the print stylesheet and the browser's **Save as PDF** d
 
 ## Tests and checks
 
-Backend, from the `backend` directory:
+Backend, from the `backend` directory (uses an in-memory application database and local test fixtures):
 
 ```powershell
-..\.venv\Scripts\python.exe -m pytest -q
+$env:AI_FUZZER_DATABASE_URL = "sqlite://"
+$env:AI_FUZZER_ALLOWED_PROVIDER_HOSTS = "controlled.test,synthetic.test,custom.example.test,127.0.0.1,localhost"
+$env:AI_FUZZER_ALLOW_PRIVATE_TARGETS = "1"
+python -m unittest discover -s tests
 ```
 
 Frontend, from `AI-Fuzzer\frontend`:
@@ -112,7 +115,7 @@ npm run lint
 npm run build
 ```
 
-The controlled backend end-to-end test starts a temporary loopback-only HTTP mock target and exercises target creation, connectivity, scan execution, analysis, findings, and report retrieval. Provider contract tests use mocked responses and do not contact paid providers. Frontend tests cover API schema mapping and the authorized new-scan workflow.
+The controlled backend end-to-end test starts a temporary loopback-only HTTP mock target and exercises target creation, connectivity, scan execution, analysis, findings, and report retrieval. Provider contract tests use mocked responses and do not contact paid providers. Frontend tests cover API schema mapping and the authorized new-scan workflow. See [TESTING](./docs/TESTING.md) for isolated test instructions and limitations.
 
 ## Known limitations
 
@@ -122,3 +125,18 @@ The controlled backend end-to-end test starts a temporary loopback-only HTTP moc
 - Comparative multi-provider suite execution and aggregate comparison UI are not implemented.
 - PDF creation is delegated to the browser's print-to-PDF workflow; the frontend provides a print action, not server-side PDF rendering.
 - API-key validation against the provider occurs when a connection test is run; a target can be saved before credentials are provided.
+
+## Application-aware security lab
+
+The current branch also contains capability profiles, synthetic identity and authorization fixtures, a local synthetic RAG corpus, simulated tools/MCP resources, synthetic connectors, capability-aware attack selection, and evidence provenance. These lab features do not create production authentication, connect to real MCP servers, or access real connector data. See [SECURITY_LIMITATIONS](./docs/SECURITY_LIMITATIONS.md) before exposing the service beyond loopback.
+
+Project guides:
+
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Implementation inventory](./docs/IMPLEMENTATION.md)
+- [API reference](./docs/API_REFERENCE.md)
+- [Attack taxonomy](./docs/ATTACK_TAXONOMY.md)
+- [Testing and isolated validation](./docs/TESTING.md)
+- [Security limitations](./docs/SECURITY_LIMITATIONS.md)
+- [User guide](./docs/USER_GUIDE.md)
+- [Validation report](./docs/FINAL_VALIDATION_REPORT.md)

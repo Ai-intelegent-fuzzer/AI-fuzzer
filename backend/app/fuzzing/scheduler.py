@@ -16,8 +16,14 @@ from app.fuzzing.models import (
 )
 from app.fuzzing.orchestrator import fuzz_orchestrator
 from app.database.store import Database, database
+from app.adapters.manager import target_manager
+from app.analysis.analyzer import response_analyzer
+from app.analysis.models import AnalysisResult
+from app.execution.models import ExecutionResult
 from app.fuzzing.engine import FUZZ_TEMPLATES
 from app.attacks.registry import attack_registry
+from app.adapters.models import CapabilityProfile, TargetScope
+from app.rag.capabilities import category_supported_by_profile
 
 
 class ScanScheduler:
@@ -55,23 +61,59 @@ class ScanScheduler:
         request: ScanCreateRequest,
         *,
         idempotency_key: str | None = None,
+        target_scope: TargetScope | None = None,
+        capability_profile: CapabilityProfile | None = None,
+        requested_categories: list[str] | None = None,
+        not_applicable_categories: list[str] | None = None,
     ) -> ScanRecord:
         scan_id = str(uuid4())
-        requested_categories = list(
+        selected_categories = list(
             request.categories
-            or sorted(set(attack_registry.list_categories()) | set(FUZZ_TEMPLATES))
+            or sorted(set(attack_registry.list_all_categories()) | set(FUZZ_TEMPLATES))
         )
+        all_requested_categories = list(
+            requested_categories if requested_categories is not None else selected_categories
+        )
+        non_applicable = list(not_applicable_categories or [])
+        applicable = [
+            category
+            for category in selected_categories
+            if category_supported_by_profile(
+                category,
+                capability_profile,
+                target_scope,
+            )
+        ]
+        non_applicable.extend(
+            category
+            for category in selected_categories
+            if category not in applicable and category not in non_applicable
+        )
+        run_request = request.model_copy(update={"categories": applicable})
         scan = ScanRecord(
             scan_id=scan_id,
             target_id=request.target_id,
+            retry_of_scan_id=request.retry_of_scan_id,
+            target_scope=target_scope,
+            capability_profile=capability_profile.model_copy(deep=True)
+            if capability_profile is not None
+            else None,
             status=ScanStatus.QUEUED,
             requested_case_count=request.count,
-            requested_categories=requested_categories,
+            requested_categories=all_requested_categories,
+            applicable_categories=applicable,
+            not_applicable_categories=non_applicable,
+            coverage=FuzzingCoverage(
+                requested_categories=all_requested_categories,
+                applicable_categories=applicable,
+                not_applicable_categories=non_applicable,
+            ),
             coverage_warning=(
                 f"Requested {request.count} total test cases for "
-                f"{len(requested_categories)} categories; "
-                "not every selected category can receive a base case."
-                if request.count < len(requested_categories)
+                f"{len(all_requested_categories)} categories; "
+                f"{len(applicable)} applicable; "
+                "not every applicable category can receive a base case."
+                if request.count < len(applicable)
                 else None
             ),
         )
@@ -83,7 +125,7 @@ class ScanScheduler:
             if self._store is not None:
                 self._store.save_scan(scan, request, idempotency_key)
             self._scans[scan_id] = scan
-            self._requests[scan_id] = request.model_copy(deep=True)
+            self._requests[scan_id] = run_request.model_copy(deep=True)
             self._results[scan_id] = []
             self._cancel_events[scan_id] = Event()
             self._futures[scan_id] = self._executor.submit(self._run, scan_id)
@@ -139,6 +181,47 @@ class ScanScheduler:
                     self._store.update_scan(scan)
             return scan.model_copy(deep=True)
 
+    def reevaluate_completed(self, scan_id: str) -> int:
+        """Re-run bounded evidence analysis into immutable history only."""
+        scan = self.get(scan_id)
+        target = target_manager.get(scan.target_id) if scan is not None else None
+        results = self.get_results(scan_id)
+        if scan is None or target is None or results is None:
+            return 0
+        count = 0
+        for result in results:
+            case = result.get("case")
+            execution = result.get("execution")
+            analysis = result.get("analysis")
+            if not isinstance(case, FuzzCase) or not isinstance(execution, ExecutionResult):
+                continue
+            if execution.status != "completed":
+                continue
+            if self._store is None:
+                continue
+            history = self._store.get_analysis_history(scan_id, case_id=case.case_id)
+            if not history:
+                if isinstance(analysis, AnalysisResult):
+                    self._store.save_analysis_history(
+                        scan_id, case.case_id, analysis, version=1
+                    )
+            analysis_case = case.model_copy(deep=True)
+            if hasattr(analysis, "evidence_provenance"):
+                analysis_case.metadata["evidence_provenance"] = [
+                    item.model_dump(mode="json") for item in analysis.evidence_provenance
+                ]
+            reevaluated = response_analyzer.analyze(
+                execution=execution,
+                category=case.category,
+                fuzz_case=analysis_case,
+            )
+            self._store.save_analysis_history(
+                scan_id, case.case_id, reevaluated,
+                version=2 if not history else None,
+            )
+            count += 1
+        return count
+
     def _run(self, scan_id: str) -> None:
         with self._lock:
             scan = self._scans[scan_id]
@@ -151,6 +234,36 @@ class ScanScheduler:
 
         try:
             generated_cases: list[FuzzCase] | None = None
+            retry_cases: list[FuzzCase] | None = None
+            if request.retry_of_scan_id:
+                original_results = self.get_results(request.retry_of_scan_id) or []
+                original_cases = {
+                    result["case"].case_id: result["case"]
+                    for result in original_results
+                    if isinstance(result.get("case"), FuzzCase)
+                }
+                retry_cases = []
+                selected_ids = set(request.retry_case_ids or original_cases)
+                for result in original_results:
+                    case = result.get("case")
+                    execution = result.get("execution")
+                    if (
+                        not isinstance(case, FuzzCase)
+                        or not isinstance(execution, ExecutionResult)
+                        or execution.status == "completed"
+                        or case.case_id not in selected_ids
+                    ):
+                        continue
+                    retry_case = case.model_copy(deep=True)
+                    retry_case.case_id = f"retry:{scan_id[:8]}:{case.case_id}"[:80]
+                    retry_case.metadata.update({
+                        "retry_of_scan_id": request.retry_of_scan_id,
+                        "retry_of_case_id": case.case_id,
+                        "retry_attempt": True,
+                    })
+                    retry_cases.append(retry_case)
+                if not retry_cases:
+                    raise ValueError("No errored cases remain eligible for retry.")
 
             def record_generated_cases(cases: list[FuzzCase]) -> None:
                 nonlocal generated_cases
@@ -189,16 +302,16 @@ class ScanScheduler:
                     scan.category_coverage_percent = (
                         round(
                             len(
-                                set(scan.requested_categories).intersection(
+                                set(scan.applicable_categories).intersection(
                                     scan.executed_categories
                                 )
                             )
-                            / len(scan.requested_categories)
+                            / len(scan.applicable_categories)
                             * 100,
                             2,
                         )
-                        if scan.requested_categories
-                        else 100.0
+                        if scan.applicable_categories
+                        else 0.0
                     )
                     scan.coverage.executed_categories = list(scan.executed_categories)
                     scan.coverage.category_coverage_percent = scan.category_coverage_percent
@@ -206,15 +319,26 @@ class ScanScheduler:
                     scan.metrics.failed_executions = scan.error_count
                     scan.metrics.findings = scan.finding_count
                     scan.metrics.categories_tested = list(scan.executed_categories)
+                    scan.inconclusive_analysis_count = sum(
+                        getattr(item.get("analysis"), "status", None).value == "inconclusive"
+                        for item in results_so_far
+                        if getattr(item.get("analysis"), "status", None) is not None
+                    )
+                    scan.metrics.inconclusive_analyses = scan.inconclusive_analysis_count
+                    scan.metrics.applicable_category_count = len(scan.applicable_categories)
+                    scan.metrics.covered_category_count = len(
+                        set(scan.applicable_categories).intersection(scan.executed_categories)
+                    )
+                    scan.metrics.not_applicable_category_count = len(scan.not_applicable_categories)
                     if self._store is not None:
                         self._store.update_scan(scan)
 
             results = fuzz_orchestrator.run(
                 target_id=request.target_id,
                 count=request.count,
-                categories=scan.requested_categories,
+                categories=request.categories,
                 max_mutation_depth=request.max_mutation_depth,
-                max_cases=100,
+                max_cases=1000,
                 max_mutations_per_case=request.max_mutations_per_case,
                 timeout_seconds=request.timeout_seconds,
                 max_retries=request.max_retries,
@@ -226,7 +350,13 @@ class ScanScheduler:
                 scan_id=scan_id,
                 cancel_event=cancel_event,
                 on_cases_generated=record_generated_cases,
+                on_provenance=(
+                    self._store.save_evidence_provenance
+                    if self._store is not None
+                    else None
+                ),
                 on_result=record_result,
+                cases=retry_cases,
             )
             if results is None:
                 raise ValueError("Target no longer exists")
@@ -249,7 +379,7 @@ class ScanScheduler:
                     for result in results
                     if isinstance(result.get("case"), FuzzCase)
                 })
-                requested_categories = set(scan.requested_categories)
+                requested_categories = set(scan.applicable_categories)
                 scan.category_coverage_percent = (
                     round(
                         len(requested_categories.intersection(scan.executed_categories))
@@ -258,10 +388,28 @@ class ScanScheduler:
                         2,
                     )
                     if requested_categories
-                    else 100.0
+                    else 0.0
                 )
                 scan.metrics = metrics
                 scan.coverage = coverage
+                scan.skipped_case_count = max(
+                    scan.requested_case_count - metrics.total_executed_cases,
+                    0,
+                )
+                scan.inconclusive_analysis_count = sum(
+                    getattr(result.get("analysis"), "status", None).value == "inconclusive"
+                    for result in results
+                    if getattr(result.get("analysis"), "status", None) is not None
+                )
+                scan.metrics.skipped_cases = scan.skipped_case_count
+                scan.metrics.inconclusive_analyses = scan.inconclusive_analysis_count
+                scan.metrics.applicable_category_count = len(scan.applicable_categories)
+                scan.metrics.covered_category_count = len(
+                    set(scan.applicable_categories).intersection(scan.executed_categories)
+                )
+                scan.metrics.not_applicable_category_count = len(scan.not_applicable_categories)
+                scan.coverage.applicable_categories = list(scan.applicable_categories)
+                scan.coverage.not_applicable_categories = list(scan.not_applicable_categories)
                 scan.coverage.requested_categories = list(scan.requested_categories)
                 scan.coverage.generated_categories = list(scan.generated_categories)
                 scan.coverage.executed_categories = list(scan.executed_categories)
@@ -348,6 +496,9 @@ class ScanScheduler:
             categories_tested=categories_tested,
             vulnerable_cases=sum(analysis.vulnerable for analysis in analyses),
             findings=sum(len(analysis.findings) for analysis in analyses),
+            inconclusive_analyses=sum(
+                analysis.status.value == "inconclusive" for analysis in analyses
+            ),
             average_execution_time_ms=(total_duration / len(durations)) if durations else 0.0,
             total_execution_time_ms=round(total_duration, 2),
             category_statistics=categories,
