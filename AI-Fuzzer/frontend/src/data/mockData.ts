@@ -1,5 +1,6 @@
 import type { DashboardSummary, Finding, Report, Scan, SystemHealthState, Target } from '../types';
 
+// Demo-only fixtures; application pages load live data through apiClient.
 export const mockTargets: Target[] = [
   {
     targetId: 'TGT-001',

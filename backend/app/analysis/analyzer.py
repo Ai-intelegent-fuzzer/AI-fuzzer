@@ -1,6 +1,15 @@
 from uuid import NAMESPACE_URL, uuid5
 
-from app.analysis.models import AnalysisResult, AnalysisStatus, Finding, Severity
+from app.analysis.models import (
+    AnalysisOutcome,
+    AnalysisResult,
+    AnalysisStatus,
+    DetectionClassification,
+    EvidenceProvenance,
+    Finding,
+    FindingVerificationStatus,
+    Severity,
+)
 from app.analysis.rules import EXPECTED_BEHAVIOR, analyze_response_details
 from app.execution.models import ExecutionResult
 from app.fuzzing.models import FuzzCase
@@ -32,7 +41,25 @@ class ResponseAnalyzer:
             if assessment is not None
             else "No target response was available for behavioral analysis."
         )
+        provenance_values = (attack_metadata or {}).get("evidence_provenance", [])
+        evidence_provenance = [
+            EvidenceProvenance.model_validate(item)
+            for item in provenance_values
+            if isinstance(item, dict)
+        ] if isinstance(provenance_values, list) else []
         execution_completed = execution.status == "completed"
+        verified_disclosure = any(
+            item.disclosure_verified for item in evidence_provenance
+        )
+        external_impact_verified = any(
+            indicator.metadata.get("external_impact_verified") is True
+            for indicator in (assessment.indicators if assessment is not None else [])
+        )
+        behavior_evidence_verified = any(
+            indicator.metadata.get("verification_level")
+            not in {None, "response_claim_only"}
+            for indicator in (assessment.indicators if assessment is not None else [])
+        )
         status = (
             assessment.status
             if execution_completed and assessment is not None
@@ -43,7 +70,34 @@ class ResponseAnalyzer:
             if execution_completed and assessment is not None
             else False
         )
+        if execution_completed and assessment is not None:
+            outcome = assessment.outcome
+        elif execution.status == "blocked":
+            outcome = AnalysisOutcome.REFUSED_OR_BLOCKED
+        elif execution_completed:
+            outcome = AnalysisOutcome.INCONCLUSIVE
+        else:
+            outcome = AnalysisOutcome.EXECUTION_FAILED
+        if not execution_completed:
+            classification = DetectionClassification.EXECUTION_ERROR
+        elif verified_disclosure or external_impact_verified or behavior_evidence_verified:
+            classification = DetectionClassification.CONFIRMED_ATTACK
+        elif outcome == AnalysisOutcome.REFUSED_OR_BLOCKED:
+            classification = DetectionClassification.BLOCKED
+        else:
+            classification = DetectionClassification.INCONCLUSIVE
         indicators = assessment.indicators if assessment is not None else []
+        if indicators:
+            rule_id = (
+                f"behavior:{category}:{indicators[0].indicator_type.value}"
+            )
+            evidence_provenance = [
+                item.model_copy(update={
+                    "analyzer_rule_id": rule_id,
+                    "analyzer_rule_version": "1.0",
+                })
+                for item in evidence_provenance
+            ]
         attack_id = (attack_metadata or {}).get("attack_id")
         attack_name = (attack_metadata or {}).get("attack_name")
 
@@ -110,6 +164,15 @@ class ResponseAnalyzer:
                 }
                 for indicator in indicators
             ]
+            verification_status = (
+                FindingVerificationStatus.CONFIRMED
+                if verified_disclosure
+                else FindingVerificationStatus.POTENTIAL
+                if primary_verification_level == "response_claim_only"
+                else FindingVerificationStatus.LIKELY
+                if assessment.confidence.value == "high"
+                else FindingVerificationStatus.POTENTIAL
+            )
             findings.append(
                 Finding(
                     finding_id=str(
@@ -160,6 +223,11 @@ class ResponseAnalyzer:
                     observed_behavior=observed_behavior,
                     indicator_type=indicators[0].indicator_type.value if indicators else None,
                     reproducibility=lineage,
+                    evidence_provenance=evidence_provenance,
+                    verification_status=verification_status,
+                    reproduction_reference=(
+                        f"{execution.scan_id or 'direct'}:{execution.case_id}"
+                    ),
                     metadata=relevant_metadata,
                 )
             )
@@ -171,11 +239,14 @@ class ResponseAnalyzer:
             category=category,
             vulnerable=vulnerable,
             status=status,
+            outcome=outcome,
+            classification=classification,
             findings=findings,
             attack_id=str(attack_id) if attack_id else None,
             expected_behavior=expected_behavior,
             observed_behavior=observed_behavior,
             indicators=indicators,
+            evidence_provenance=evidence_provenance,
         )
 
 

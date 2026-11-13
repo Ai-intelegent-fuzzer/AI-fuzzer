@@ -2,6 +2,7 @@ import asyncio
 import json
 import unittest
 from collections.abc import Callable
+from concurrent.futures import Future
 from threading import Event
 from unittest.mock import patch
 
@@ -54,7 +55,7 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(len({item.prompt for item in mutations}), 10)
         self.assertEqual(
             {item.mutation_strategy for item in mutations},
-            {strategy.name for strategy in prompt_mutator.strategies},
+            {strategy.name for strategy in prompt_mutator.strategies[:10]},
         )
 
     def test_engine_category_and_depth_limits(self) -> None:
@@ -65,19 +66,19 @@ class MutationTests(unittest.TestCase):
             max_mutations_per_case=1,
         )
 
-        self.assertEqual(len(generated), 8)
+        self.assertEqual(len(generated), 2)
         self.assertTrue(all(item.category == "role_confusion" for item in generated))
         self.assertEqual(
             [item.mutation_depth for item in generated],
-            [0, 0, 1, 2, 3, 1, 2, 3],
+            [0, 1],
         )
-        self.assertEqual(len(generated[4].metadata["ancestor_case_ids"]), 3)
+        self.assertEqual(len(generated[1].metadata["ancestor_case_ids"]), 1)
         self.assertEqual(len(fuzz_engine.generate(500)), 100)
         self.assertGreaterEqual(len(FUZZ_TEMPLATES), 11)
 
     def test_engine_keeps_base_case_before_mutation(self) -> None:
         generated = fuzz_engine.generate(
-            count=1,
+            count=3,
             categories=["prompt_injection"],
             max_mutation_depth=1,
             max_mutations_per_case=2,
@@ -124,8 +125,54 @@ class MutationTests(unittest.TestCase):
             max_cases=4,
         )
 
-        self.assertEqual(len(generated), 4)
-        self.assertEqual(sum(case.mutation_depth == 0 for case in generated), 3)
+        self.assertEqual(len(generated), 3)
+        self.assertEqual(sum(case.mutation_depth == 0 for case in generated), 1)
+
+    def test_selected_categories_receive_base_cases_when_count_permits(self) -> None:
+        categories = ["prompt_injection", "jailbreak", "data_leakage"]
+        generated = fuzz_engine.generate(
+            count=len(categories),
+            categories=categories,
+            max_mutation_depth=1,
+            max_mutations_per_case=2,
+        )
+
+        self.assertEqual(len(generated), len(categories))
+        self.assertEqual({case.category for case in generated}, set(categories))
+        self.assertTrue(all(case.mutation_depth == 0 for case in generated))
+
+    def test_insufficient_count_has_partial_category_coverage(self) -> None:
+        categories = ["prompt_injection", "jailbreak", "data_leakage"]
+        generated = fuzz_engine.generate(
+            count=2,
+            categories=categories,
+            max_mutation_depth=0,
+        )
+
+        self.assertEqual(len(generated), 2)
+        self.assertEqual(
+            {case.category for case in generated},
+            {"prompt_injection", "jailbreak"},
+        )
+
+    def test_mutations_consume_total_budget_and_keep_parent_category(self) -> None:
+        generated = fuzz_engine.generate(
+            count=5,
+            categories=["prompt_injection", "jailbreak"],
+            max_mutation_depth=1,
+            max_mutations_per_case=2,
+        )
+        cases_by_id = {case.case_id: case for case in generated}
+        mutations = [case for case in generated if case.parent_case_id]
+
+        self.assertEqual(len(generated), 5)
+        self.assertEqual({case.category for case in generated}, {"prompt_injection", "jailbreak"})
+        self.assertTrue(
+            all(
+                cases_by_id[case.parent_case_id].category == case.category
+                for case in mutations
+            )
+        )
 
     def test_requested_categories_are_distributed_and_exclusive(self) -> None:
         categories = ["prompt_injection", "jailbreak", "data_leakage"]
@@ -145,7 +192,7 @@ class MutationTests(unittest.TestCase):
 
     def test_mutation_lineage_and_attack_metadata_are_preserved(self) -> None:
         generated = fuzz_engine.generate(
-            1,
+            3,
             ["prompt_injection"],
             max_mutation_depth=2,
             max_mutations_per_case=1,
@@ -180,7 +227,7 @@ class MutationTests(unittest.TestCase):
     def test_mutate_attack_cases_keeps_the_generated_base(self) -> None:
         generated = fuzz_engine.mutate_attack_cases(
             "prompt_injection",
-            count=1,
+            count=2,
             strategy_names=["role_variation"],
         )
 
@@ -192,20 +239,20 @@ class MutationTests(unittest.TestCase):
 
     def test_multi_turn_sequences_are_ordered_and_traceable(self) -> None:
         conversation = fuzz_engine.generate_conversations(
-            1,
+            3,
             ["context_manipulation"],
             turns=3,
         )[0]
 
         self.assertEqual([turn.turn_number for turn in conversation.turns], [1, 2, 3])
-        self.assertTrue(all(turn.mutation_strategy for turn in conversation.turns))
+        self.assertTrue(all(turn.mutation_strategy for turn in conversation.turns[1:]))
         self.assertEqual(
             conversation.turns[1].parent_case_id,
             conversation.turns[0].case_id,
         )
         self.assertEqual(
-            conversation.turns[0].metadata["origin_case_id"],
-            conversation.turns[0].metadata["ancestor_case_ids"][0],
+            conversation.turns[1].metadata["origin_case_id"],
+            conversation.turns[1].metadata["ancestor_case_ids"][0],
         )
 
 
@@ -242,7 +289,7 @@ class ExecutionTests(unittest.TestCase):
             "app.execution.executor.httpx.Client",
             side_effect=lambda **kwargs: real_client(
                 transport=httpx.MockTransport(retry_handler),
-                **kwargs,
+                **{key: value for key, value in kwargs.items() if key != "transport"},
             ),
         ):
             result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
@@ -255,7 +302,7 @@ class ExecutionTests(unittest.TestCase):
             "app.execution.executor.httpx.Client",
             side_effect=lambda **kwargs: real_client(
                 transport=httpx.MockTransport(reject_handler),
-                **kwargs,
+                **{key: value for key, value in kwargs.items() if key != "transport"},
             ),
         ):
             rejected = FuzzExecutor().execute(self.target, self.case, max_retries=3)
@@ -271,7 +318,7 @@ class ExecutionTests(unittest.TestCase):
             "app.execution.executor.httpx.Client",
             side_effect=lambda **kwargs: real_client(
                 transport=httpx.MockTransport(handler),
-                **kwargs,
+                **{key: value for key, value in kwargs.items() if key != "transport"},
             ),
         ):
             result = FuzzExecutor().execute(
@@ -296,7 +343,7 @@ class ExecutionTests(unittest.TestCase):
             "app.execution.executor.httpx.Client",
             side_effect=lambda **kwargs: real_client(
                 transport=httpx.MockTransport(handler),
-                **kwargs,
+                **{key: value for key, value in kwargs.items() if key != "transport"},
             ),
         ):
             result = FuzzExecutor().execute(self.target, self.case)
@@ -321,7 +368,7 @@ class ExecutionTests(unittest.TestCase):
             "app.execution.executor.httpx.Client",
             side_effect=lambda **kwargs: real_client(
                 transport=httpx.MockTransport(handler),
-                **kwargs,
+                **{key: value for key, value in kwargs.items() if key != "transport"},
             ),
         ):
             result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
@@ -346,7 +393,7 @@ class ExecutionTests(unittest.TestCase):
                 "app.execution.executor.httpx.Client",
                 side_effect=lambda **kwargs: real_client(
                     transport=httpx.MockTransport(handler),
-                    **kwargs,
+                    **{key: value for key, value in kwargs.items() if key != "transport"},
                 ),
             ),
         ):
@@ -358,9 +405,14 @@ class ExecutionTests(unittest.TestCase):
                 categories=["prompt_injection"],
             )
 
-        self.assertEqual(len(results), 11)
+        self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["execution"].status, "completed")
-        self.assertTrue(results[0]["analysis"].vulnerable)
+        self.assertFalse(results[0]["analysis"].vulnerable)
+        self.assertEqual(
+            results[0]["analysis"].outcome.value,
+            "inconclusive",
+        )
+        self.assertFalse(results[0]["analysis"].findings)
 
     def test_multi_turn_execution_carries_prior_response_as_context(self) -> None:
         real_client = httpx.Client
@@ -381,7 +433,7 @@ class ExecutionTests(unittest.TestCase):
                 "app.execution.executor.httpx.Client",
                 side_effect=lambda **kwargs: real_client(
                     transport=httpx.MockTransport(handler),
-                    **kwargs,
+                    **{key: value for key, value in kwargs.items() if key != "transport"},
                 ),
             ),
         ):
@@ -389,7 +441,7 @@ class ExecutionTests(unittest.TestCase):
 
             results = FuzzOrchestrator().run(
                 "synthetic",
-                1,
+                2,
                 categories=["context_manipulation"],
                 multi_turn=True,
                 turns_per_conversation=2,
@@ -427,6 +479,21 @@ class ExecutionTests(unittest.TestCase):
 
 
 class ScanTests(unittest.TestCase):
+    def test_scheduler_warns_when_case_budget_cannot_cover_all_categories(self) -> None:
+        scheduler = ScanScheduler(max_workers=1)
+        request = ScanCreateRequest(
+            target_id="synthetic",
+            count=2,
+            categories=["prompt_injection", "jailbreak", "data_leakage"],
+        )
+
+        with patch.object(scheduler._executor, "submit", return_value=Future()):
+            queued = scheduler.start(request)
+
+        self.assertIn("2 total test cases", queued.coverage_warning)
+        self.assertIn("3 categories", queued.coverage_warning)
+        self.assertEqual(queued.requested_categories, request.categories)
+
     def test_scheduler_lifecycle_metrics_and_coverage(self) -> None:
         scheduler = ScanScheduler(max_workers=1)
         case = FuzzCase(
@@ -637,7 +704,7 @@ class ScanTests(unittest.TestCase):
             "app.fuzzing.scheduler.fuzz_orchestrator.run",
             side_effect=run_partial_scan,
         ):
-            queued = scheduler.start(ScanCreateRequest(target_id="synthetic", count=1))
+            queued = scheduler.start(ScanCreateRequest(target_id="synthetic", count=3))
             scheduler._futures[queued.scan_id].result(timeout=5)
 
         completed = scheduler.get(queued.scan_id)
@@ -679,11 +746,8 @@ class ApiCompatibilityTests(unittest.TestCase):
                     f"/targets/{target_id}/fuzz-cases?count=2"
                 )
                 self.assertEqual(cases.status_code, 200)
-                self.assertEqual(len(cases.json()), 22)
-                self.assertEqual(
-                    sum(case["mutation_depth"] == 0 for case in cases.json()),
-                    2,
-                )
+                self.assertEqual(len(cases.json()), 2)
+                self.assertLessEqual(len(cases.json()), 2)
                 self.assertIn("mutation_strategy", cases.json()[0])
 
                 def execute(target: Target, case: FuzzCase, **kwargs: object) -> ExecutionResult:
@@ -836,19 +900,31 @@ class ApiCompatibilityTests(unittest.TestCase):
                     findings=[scan_finding],
                     indicators=[scan_indicator],
                 )
+                def run_controlled_scan(**kwargs: object) -> list[dict[str, object]]:
+                    on_cases_generated = kwargs.get("on_cases_generated")
+                    if callable(on_cases_generated):
+                        on_cases_generated([scan_case])
+                    result = {
+                        "case": scan_case,
+                        "execution": scan_execution,
+                        "analysis": scan_analysis,
+                    }
+                    on_result = kwargs.get("on_result")
+                    if callable(on_result):
+                        on_result(result)
+                    return [result]
+
                 with patch(
                     "app.fuzzing.scheduler.fuzz_orchestrator.run",
-                    return_value=[
-                        {
-                            "case": scan_case,
-                            "execution": scan_execution,
-                            "analysis": scan_analysis,
-                        }
-                    ],
+                    side_effect=run_controlled_scan,
                 ):
                     started = await client.post(
                         "/scans",
-                        json={"target_id": target_id, "count": 1},
+                        json={
+                            "target_id": target_id,
+                            "authorization_confirmed": True,
+                            "count": 1,
+                        },
                     )
                     self.assertEqual(started.status_code, 202)
                     scan_id = started.json()["scan_id"]

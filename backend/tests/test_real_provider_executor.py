@@ -4,6 +4,8 @@ from unittest.mock import patch
 import httpx
 
 from app.adapters.models import AIProvider, Target, TargetType
+from app.analysis.analyzer import ResponseAnalyzer
+from app.analysis.models import AnalysisOutcome
 from app.execution.executor import FuzzExecutor
 from app.fuzzing.models import FuzzCase
 
@@ -31,7 +33,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         )
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": "test-model"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_provider_response_truncation_is_recorded(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -51,7 +53,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertTrue(result.response_truncated)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": "test-model"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_sends_chat_completion_and_extracts_real_response(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -71,14 +73,14 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.model, "test-model")
         self.assertEqual(result.total_tokens, 9)
         self.assertNotIn("test-secret", result.model or "")
-        self.assertFalse(kwargs["follow_redirects"])
+        self.assertEqual(kwargs["response_size_limit"], 1_000_000)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"}, clear=True)
     @patch(
         "app.adapters.endpoint_policy.socket.getaddrinfo",
         return_value=[(2, 1, 6, "", ("10.0.0.8", 443))],
     )
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_private_dns_destination_is_blocked_before_provider_request(
         self, post, _getaddrinfo
     ) -> None:
@@ -105,7 +107,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         "os.environ",
         {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": "default-test-model"},
     )
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_provider_model_uses_configured_default(self, post) -> None:
         target = self.target.model_copy(update={"model": None})
         post.return_value = httpx.Response(
@@ -120,7 +122,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["model"], "default-test-model")
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_rate_limit_is_not_a_vulnerability_response(self, post) -> None:
         post.return_value = httpx.Response(429, json={"error": {"message": "quota"}})
         result = FuzzExecutor().execute(self.target, self.case)
@@ -129,7 +131,50 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.failure_reason, "provider_rate_limited")
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
+    def test_provider_500_is_a_retryable_provider_error(self, post) -> None:
+        post.return_value = httpx.Response(500, json={"error": {"message": "upstream"}})
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+        self.assertEqual(result.status, "target_error")
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(result.failure_reason, "provider_server_error")
+        self.assertIsNone(result.response_body)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.time.sleep")
+    @patch("app.execution.executor.bounded_post")
+    def test_rate_limit_retry_honors_retry_after_without_exposing_headers(
+        self, post, sleep
+    ) -> None:
+        post.side_effect = [
+            httpx.Response(429, headers={"retry-after": "0"}, json={"error": {}}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]}),
+        ]
+
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.attempts, 2)
+        sleep.assert_called_once_with(0.0)
+        self.assertNotIn("retry-after", result.message.lower())
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.time.sleep")
+    @patch("app.execution.executor.bounded_post")
+    def test_malformed_response_is_retried_then_parsed(self, post, sleep) -> None:
+        post.side_effect = [
+            httpx.Response(200, json={"unexpected": "format"}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]}),
+        ]
+
+        result = FuzzExecutor().execute(self.target, self.case, max_retries=1)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.attempts, 2)
+        sleep.assert_called_once()
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
     def test_authentication_failure_does_not_expose_provider_body(self, post) -> None:
         post.return_value = httpx.Response(401, text="credential detail")
         result = FuzzExecutor().execute(self.target, self.case)
@@ -138,7 +183,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertIsNone(result.response_body)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_unavailable_model_is_reported_without_raw_provider_body(self, post) -> None:
         post.return_value = httpx.Response(404, text="private model diagnostic")
         result = FuzzExecutor().execute(self.target, self.case)
@@ -148,7 +193,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertIsNone(result.response_body)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_malformed_success_response_is_reported(self, post) -> None:
         post.return_value = httpx.Response(200, json={"unexpected": "format"})
         result = FuzzExecutor().execute(self.target, self.case)
@@ -156,7 +201,70 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertIsNone(result.response_body)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
+    def test_empty_success_response_is_not_reported_as_completed(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": ""}}]},
+        )
+
+        result = FuzzExecutor().execute(self.target, self.case)
+
+        self.assertEqual(result.status, "invalid_response")
+        self.assertEqual(result.failure_reason, "provider_response_empty")
+        self.assertIsNone(result.response_body)
+        analysis = ResponseAnalyzer().analyze(result, self.case.category, fuzz_case=self.case)
+        self.assertEqual(analysis.outcome, AnalysisOutcome.EXECUTION_FAILED)
+        self.assertEqual(analysis.findings, [])
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
+    def test_chat_completions_text_block_response_is_normalized(self, post) -> None:
+        post.return_value = httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I cannot comply"},
+                            {"type": "image", "image_url": {"url": "ignored"}},
+                        ]
+                    }
+                }],
+            },
+        )
+
+        result = FuzzExecutor().execute(self.target, self.case)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_body, "I cannot comply")
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
+    def test_chat_completions_refusal_field_is_a_valid_response(self, post) -> None:
+        refusal = "I cannot comply with that request."
+        post.return_value = httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "content": None,
+                        "refusal": refusal,
+                    }
+                }],
+            },
+        )
+
+        result = FuzzExecutor().execute(self.target, self.case)
+        analysis = ResponseAnalyzer().analyze(result, self.case.category, fuzz_case=self.case)
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_body, refusal)
+        self.assertEqual(analysis.outcome, AnalysisOutcome.REFUSED_OR_BLOCKED)
+        self.assertFalse(analysis.vulnerable)
+
+    @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
+    @patch("app.execution.executor.bounded_post")
     def test_timeout_is_reported_without_secret(self, post) -> None:
         post.side_effect = httpx.TimeoutException("private diagnostic")
         result = FuzzExecutor().execute(self.target, self.case)
@@ -164,7 +272,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotIn("private diagnostic", result.message)
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_network_error_is_sanitized(self, post) -> None:
         post.side_effect = httpx.ConnectError("private connection details")
         result = FuzzExecutor().execute(self.target, self.case)
@@ -172,7 +280,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotIn("private connection details", result.message)
 
     @patch.dict("os.environ", {"OPENAI_API_KEY": "test-secret"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_openai_provider_uses_openai_key(self, post) -> None:
         target = self.target.model_copy(update={"provider": AIProvider.OPENAI})
         post.return_value = httpx.Response(
@@ -193,7 +301,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         })
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_success_parses_text_usage_and_endpoint(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -226,7 +334,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.total_tokens, 10)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_endpoint_uses_target_model_when_endpoint_names_another_model(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -252,7 +360,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         {"GEMINI_API_KEY": "test-gemini-key", "GEMINI_MODEL": "gemini-2.5-flash"},
         clear=True,
     )
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_response_truncation_is_recorded(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -273,7 +381,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.failure_reason, "provider_api_key_missing")
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_rate_limit_is_handled(self, post) -> None:
         post.return_value = httpx.Response(429, text="private quota details")
         result = FuzzExecutor().execute(self._gemini_target(), self.case)
@@ -281,7 +389,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotIn("private quota details", result.message)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_authentication_error_is_sanitized(self, post) -> None:
         post.return_value = httpx.Response(403, text="private credential details")
         result = FuzzExecutor().execute(self._gemini_target(), self.case)
@@ -289,7 +397,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotIn("private credential details", result.message)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_malformed_response_is_handled(self, post) -> None:
         post.return_value = httpx.Response(200, json={"unexpected": "format"})
         result = FuzzExecutor().execute(self._gemini_target(), self.case)
@@ -297,7 +405,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertIsNone(result.response_body)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_prompt_safety_block_is_recognized(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -312,7 +420,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotIn("test-gemini-key", result.message)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_candidate_safety_finish_reason_is_recognized(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -326,7 +434,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertIsNone(result.response_body)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_non_safety_finish_reason_is_not_classified_as_blocked(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -339,7 +447,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.failure_reason, "provider_response_malformed")
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_unspecified_block_reason_allows_normal_candidate(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -360,7 +468,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(result.response_body, "Hello")
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_text_refusal_is_not_a_provider_safety_block(self, post) -> None:
         refusal = "I cannot help with that request."
         post.return_value = httpx.Response(
@@ -382,7 +490,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertNotEqual(result.failure_reason, "provider_safety_blocked")
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_empty_candidate_text_is_invalid_response(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -401,7 +509,7 @@ class RealProviderExecutorTests(unittest.TestCase):
 
 
     @patch.dict("os.environ", {"GROQ_API_KEY": "test-secret", "GROQ_MODEL": "test-model"})
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_security_test_instruction_is_sent_as_system_message(self, post) -> None:
         post.return_value = httpx.Response(
             200,
@@ -423,7 +531,7 @@ class RealProviderExecutorTests(unittest.TestCase):
         self.assertEqual(messages[-1]["content"], case.prompt)
 
     @patch.dict("os.environ", {"GEMINI_API_KEY": "test-gemini-key"}, clear=True)
-    @patch("app.execution.executor.httpx.post")
+    @patch("app.execution.executor.bounded_post")
     def test_gemini_security_test_instruction_uses_system_instruction_field(self, post) -> None:
         post.return_value = httpx.Response(
             200,

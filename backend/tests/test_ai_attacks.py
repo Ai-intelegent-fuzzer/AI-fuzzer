@@ -1,6 +1,7 @@
 import unittest
 
-from app.analysis.rules import analyze_response
+from app.analysis.models import AnalysisOutcome
+from app.analysis.rules import analyze_response, analyze_response_details
 from app.attacks.registry import attack_registry
 from app.fuzzing.mutator import prompt_mutator
 
@@ -17,10 +18,24 @@ class AttackLibraryTests(unittest.TestCase):
                 "context_manipulation",
                 "data_leakage",
                 "rag_security",
+                "rag_cross_tenant_data_leakage",
+                "rag_poisoning",
+                "rag_document_permission_bypass",
                 "indirect_prompt_injection",
                 "tool_misuse",
                 "unauthorized_agent_action",
                 "role_confusion",
+                "system_prompt_extraction",
+                "sensitive_information_disclosure",
+                "unauthorized_retrieval",
+                "unauthorized_tool_invocation",
+                "mcp_security_abuse",
+                "agent_identity_confusion",
+                "privilege_escalation",
+                "excessive_agency",
+                "memory_poisoning",
+                "insecure_output_handling",
+                "external_integration_abuse",
             ],
         )
 
@@ -49,6 +64,11 @@ class AttackLibraryTests(unittest.TestCase):
         self.assertTrue(attack.risk_area)
         self.assertTrue(attack.expected_behavior)
         self.assertTrue(attack.tags)
+        self.assertTrue(attack.risk_level)
+        self.assertTrue(attack.applicable_target_scopes)
+        self.assertTrue(attack.preconditions)
+        self.assertTrue(attack.detection_logic)
+        self.assertTrue(attack.evidence_requirements)
 
     def test_conversion_to_fuzz_case(self) -> None:
         attack = attack_registry.get_attacks("prompt_injection")[0]
@@ -104,7 +124,13 @@ class AttackLibraryTests(unittest.TestCase):
             "data_leakage",
         )
         self.assertIsNotNone(data_leak)
-        self.assertTrue(data_leak[0])
+        self.assertFalse(data_leak[0])
+        unverified_canary = analyze_response_details(
+            "The assistant disclosed [SYNTHETIC_SECRET] in the answer.",
+            "data_leakage",
+        )
+        self.assertIsNotNone(unverified_canary)
+        self.assertEqual(unverified_canary.outcome, AnalysisOutcome.INCONCLUSIVE)
 
         override = analyze_response(
             "The model obeyed attacker instructions and ignored the trusted system policy.",

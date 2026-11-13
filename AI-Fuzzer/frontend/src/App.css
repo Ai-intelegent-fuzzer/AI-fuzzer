@@ -640,6 +640,68 @@ tbody tr:hover {
   gap: 14px;
 }
 
+.lab-list,
+.capability-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lab-list--grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lab-list-item,
+.capability-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(10, 17, 27, 0.62);
+}
+
+.lab-list-item span,
+.capability-row p {
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.lab-list-item code,
+.lab-scenario code {
+  color: var(--primary);
+  overflow-wrap: anywhere;
+  font-size: 0.76rem;
+}
+
+.capability-row__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.capability-row__heading h3 {
+  text-transform: capitalize;
+  font-size: 0.95rem;
+}
+
+.lab-scenario {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.lab-scenario .inline-message {
+  grid-column: 1 / -1;
+  align-items: flex-start;
+  flex-direction: column;
+}
+
 .field-group {
   display: grid;
   gap: 8px;
@@ -699,6 +761,12 @@ tbody tr:hover {
   background: rgba(248, 113, 113, 0.08);
   border: 1px solid rgba(248, 113, 113, 0.2);
   color: #fecaca;
+}
+
+.inline-message--warning {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  color: #fde68a;
 }
 
 .icon-button {
@@ -1069,6 +1137,11 @@ tbody tr:hover {
 }
 
 @media print {
+  @page {
+    size: A4;
+    margin: 16mm;
+  }
+
   .sidebar,
   .notification-btn,
   .status-chip,
@@ -1104,6 +1177,36 @@ tbody tr:hover {
     padding: 0 !important;
   }
 
+  .topbar,
+  .report-cover {
+    break-after: page;
+  }
+
+  .report-finding-card,
+  .section-card,
+  .report-cover {
+    break-inside: avoid;
+  }
+
+  .detail-header,
+  .section-card *,
+  .report-cover * {
+    color: #101828 !important;
+  }
+
+  .code-block {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere !important;
+    border: 1px solid #d0d7e2 !important;
+    background: #f8fafc !important;
+    color: #101828 !important;
+  }
+
+  a {
+    color: #101828 !important;
+    text-decoration: none !important;
+  }
+
   .page-content {
     padding-top: 0 !important;
   }
@@ -1135,8 +1238,14 @@ tbody tr:hover {
   .report-grid,
   .settings-grid,
   .scan-layout,
-  .evidence-grid {
+  .evidence-grid,
+  .lab-list--grid,
+  .lab-scenario {
     grid-template-columns: 1fr;
+  }
+
+  .capability-row__heading {
+    flex-direction: column;
   }
 
   .topbar,

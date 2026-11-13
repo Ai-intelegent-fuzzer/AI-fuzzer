@@ -2,10 +2,15 @@ import os
 import unittest
 from unittest.mock import patch
 
+import httpcore
+import httpx
 from pydantic import ValidationError
 
 from app.adapters.endpoint_policy import (
+    _PinnedNetworkBackend,
+    ResponseTooLargeError,
     UnsafeTargetEndpointError,
+    bounded_post,
     validate_target_endpoint,
 )
 from app.adapters.models import TargetCreate
@@ -89,6 +94,86 @@ class EndpointPolicyTests(unittest.TestCase):
             )
 
         self.assertEqual(str(target.endpoint), endpoint)
+
+    def test_connection_backend_pins_the_validated_public_address(self) -> None:
+        with (
+            patch(
+                "app.adapters.endpoint_policy.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("8.8.8.8", 443))],
+            ),
+            patch(
+                "httpcore.SyncBackend.connect_tcp",
+                return_value="controlled-stream",
+            ) as connect_tcp,
+        ):
+            backend = _PinnedNetworkBackend(
+                allow_private=False,
+                allow_local_ollama=False,
+            )
+            result = backend.connect_tcp("provider.example", 443)
+
+        self.assertEqual(result, "controlled-stream")
+        self.assertEqual(connect_tcp.call_args.args[0], "8.8.8.8")
+
+    def test_connection_backend_rejects_private_dns_rebinding(self) -> None:
+        with (
+            patch(
+                "app.adapters.endpoint_policy.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("10.0.0.8", 443))],
+            ),
+            patch("httpcore.SyncBackend.connect_tcp") as connect_tcp,
+        ):
+            backend = _PinnedNetworkBackend(
+                allow_private=False,
+                allow_local_ollama=False,
+            )
+            with self.assertRaises(httpcore.ConnectError):
+                backend.connect_tcp("provider.example", 443)
+
+        connect_tcp.assert_not_called()
+
+    def test_provider_response_limit_is_enforced_during_streaming(self) -> None:
+        def handler(request):
+            return httpx.Response(200, content=b"0123456789", request=request)
+
+        with patch(
+            "app.adapters.endpoint_policy.PinnedHTTPTransport",
+            return_value=httpx.MockTransport(handler),
+        ):
+            with self.assertRaises(ResponseTooLargeError):
+                bounded_post(
+                    "https://provider.example/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    json={"model": "controlled", "messages": []},
+                    timeout=1,
+                    response_size_limit=4,
+                )
+
+    def test_provider_redirects_are_not_followed(self) -> None:
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(
+                302,
+                headers={"Location": "https://redirect.example/"},
+                request=request,
+            )
+
+        with patch(
+            "app.adapters.endpoint_policy.PinnedHTTPTransport",
+            return_value=httpx.MockTransport(handler),
+        ):
+            response = bounded_post(
+                "https://provider.example/v1/chat/completions",
+                headers={"Content-Type": "application/json"},
+                json={"model": "controlled", "messages": []},
+                timeout=1,
+                response_size_limit=128,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(len(requests), 1)
 
 
 if __name__ == "__main__":

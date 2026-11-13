@@ -10,6 +10,8 @@ import { ScanDetailsPage } from './pages/ScanDetailsPage';
 import { ScanHistoryPage } from './pages/ScanHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TargetsPage } from './pages/TargetsPage';
+import { CapabilitiesPage } from './pages/CapabilitiesPage';
+import { SecurityLabPage } from './pages/SecurityLabPage';
 import './App.css';
 
 const pageMeta: Record<string, { title: string; subtitle: string }> = {
@@ -20,6 +22,14 @@ const pageMeta: Record<string, { title: string; subtitle: string }> = {
   '/targets': {
     title: 'Targets',
     subtitle: 'Authorized AI endpoints and risk posture overview.',
+  },
+  '/capabilities': {
+    title: 'Target Capabilities',
+    subtitle: 'Configure and review capability-gated assessment scope.',
+  },
+  '/security-lab': {
+    title: 'Application Security Lab',
+    subtitle: 'Explore local synthetic identity, RAG, tool, connector, and attack fixtures.',
   },
   '/scans/new': {
     title: 'New Scan',
@@ -61,6 +71,8 @@ function AppContent() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/targets" element={<TargetsPage />} />
+        <Route path="/capabilities" element={<CapabilitiesPage />} />
+        <Route path="/security-lab" element={<SecurityLabPage />} />
         <Route path="/scans/new" element={<NewScanPage />} />
         <Route path="/scans/history" element={<ScanHistoryPage />} />
         <Route path="/scans/:scanId" element={<ScanDetailsPage />} />

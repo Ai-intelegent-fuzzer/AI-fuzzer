@@ -19,3 +19,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local application databases and keys
+*.sqlite
+*.sqlite3
+*.db

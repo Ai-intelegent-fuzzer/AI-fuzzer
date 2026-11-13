@@ -20,6 +20,7 @@ import type {
   TargetDraft,
 } from '../types';
 
+// Demo-only in-memory service; production pages use apiClient.
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const serviceState = {
@@ -111,7 +112,7 @@ export const mockAppService: AppService = {
       scanId,
       target: target?.name ?? 'Selected target',
       targetId: target?.targetId,
-      name: input.name,
+      name: `${target?.name ?? 'Selected target'} validation`,
       status: 'Running',
       testsTotal: 280,
       testsCompleted: 0,
@@ -119,7 +120,7 @@ export const mockAppService: AppService = {
       startedAt,
       duration: '00:00:00',
       categories: input.categories,
-      profile: input.profile,
+      profile: 'Standard',
       timeout: input.timeout,
       delayMs: input.delayMs,
       currentStage: 'Preparing Test Cases',

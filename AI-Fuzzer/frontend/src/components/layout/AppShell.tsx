@@ -37,8 +37,8 @@ export function AppShell({ title, subtitle, actions, children }: AppShellProps) 
                 <ShieldCheck size={14} />
               </div>
               <div>
-                <strong>Sushil</strong>
-                <small>Frontend Engineer</small>
+                <strong>Assessment Operator</strong>
+                <small>Security reviewer</small>
               </div>
             </div>
           </div>
